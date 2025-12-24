@@ -1,0 +1,123 @@
+from rest_framework import serializers
+from .models import Lead, LeadActivity, FollowUp
+from apps.accounts.serializers import UserSerializer
+from django.contrib.auth import get_user_model
+User = get_user_model()
+
+class LeadActivitySerializer(serializers.ModelSerializer):
+    """
+    Serializer for Lead Activity
+    """
+    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
+    
+    class Meta:
+        model = LeadActivity
+        fields = [
+            'id', 'lead', 'user', 'user_name', 'activity_type',
+            'description', 'old_status', 'new_status', 'created_at'
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class FollowUpSerializer(serializers.ModelSerializer):
+    """
+    Serializer for Follow Up
+    """
+    assigned_to_name = serializers.CharField(source='assigned_to.get_full_name', read_only=True)
+    lead_name = serializers.CharField(source='lead.name', read_only=True)
+    
+    class Meta:
+        model = FollowUp
+        fields = [
+            'id', 'lead', 'lead_name', 'assigned_to', 'assigned_to_name',
+            'scheduled_date', 'notes', 'completed', 'completed_at',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class LeadSerializer(serializers.ModelSerializer):
+    """
+    Serializer for Lead model
+    """
+    lead_type_display = serializers.CharField(source='get_lead_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    assigned_to_name = serializers.CharField(source='assigned_to.get_full_name', read_only=True)
+    uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True)
+    converted_by_name = serializers.CharField(source='converted_by.get_full_name', read_only=True)
+    
+    class Meta:
+        model = Lead
+        fields = [
+            'id', 'name', 'email', 'phone', 'company', 'city', 'state',
+            'lead_type', 'lead_type_display', 'status', 'status_display',
+            'assigned_to', 'assigned_to_name', 'uploaded_by', 'uploaded_by_name',
+            'converted_by', 'converted_by_name', 'converted_at', 'original_type',
+            'notes', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'uploaded_by', 'converted_by', 'converted_at', 'created_at', 'updated_at']
+
+
+class LeadDetailSerializer(serializers.ModelSerializer):
+    """
+    Detailed serializer for Lead with activities and follow-ups
+    """
+    lead_type_display = serializers.CharField(source='get_lead_type_display', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    assigned_to_detail = UserSerializer(source='assigned_to', read_only=True)
+    uploaded_by_detail = UserSerializer(source='uploaded_by', read_only=True)
+    converted_by_detail = UserSerializer(source='converted_by', read_only=True)
+    activities = LeadActivitySerializer(many=True, read_only=True)
+    followups = FollowUpSerializer(many=True, read_only=True)
+    
+    class Meta:
+        model = Lead
+        fields = [
+            'id', 'name', 'email', 'phone', 'company', 'city', 'state',
+            'lead_type', 'lead_type_display', 'status', 'status_display',
+            'assigned_to', 'assigned_to_detail', 'uploaded_by', 'uploaded_by_detail',
+            'converted_by', 'converted_by_detail', 'converted_at', 'original_type',
+            'notes', 'activities', 'followups', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'uploaded_by', 'converted_by', 'converted_at', 'created_at', 'updated_at']
+
+
+class LeadCreateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for creating leads
+    """
+    class Meta:
+        model = Lead
+        fields = [
+            'name', 'email', 'phone', 'company', 'city', 'state',
+            'lead_type', 'status', 'assigned_to', 'notes'
+        ]
+
+
+class LeadUpdateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for updating leads
+    """
+    class Meta:
+        model = Lead
+        fields = [
+            'name', 'email', 'phone', 'company', 'city', 'state',
+            'status', 'notes'
+        ]
+
+
+class LeadConversionSerializer(serializers.Serializer):
+    new_type = serializers.ChoiceField(choices=['FRANCHISE', 'PACKAGE'])
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        required=False 
+    )
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class LeadUploadSerializer(serializers.Serializer):
+    """
+    Serializer for bulk lead upload
+    """
+    file = serializers.FileField()
+    lead_type = serializers.ChoiceField(choices=['FRANCHISE', 'PACKAGE'])
