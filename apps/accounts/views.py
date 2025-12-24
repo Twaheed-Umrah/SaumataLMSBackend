@@ -482,11 +482,7 @@ class UserViewSet(viewsets.ModelViewSet):
         return success_response(
             {
                 "email": email,
-                "tokens": {
-                    "refresh": str(refresh),
-                    "access": str(refresh.access_token),
-                }
-            },
+                            },
             "Password reset successfully"
         )
 
