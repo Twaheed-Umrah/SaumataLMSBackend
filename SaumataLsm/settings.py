@@ -10,7 +10,13 @@ SECRET_KEY = 'Saumata-Lsm-hajj-umrah-786'
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = [
+    'lsm.hajumrahservice.com',
+    'www.lsm.hajumrahservice.com',
+    '51.20.91.180',
+    'localhost',
+    '127.0.0.1',
+    ]
 
 # Application definition
 INSTALLED_APPS = [
@@ -135,8 +141,19 @@ EMAIL_USE_TLS = True
 EMAIL_HOST_USER = 'hajjumrahservice072@gmail.com'
 EMAIL_HOST_PASSWORD = 'pjrnsuqeoqnglohc'  
 # CORS Settings
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = [
+    "https://lead.hajumrahservice.com",
+    "https://www.lead.hajumrahservice.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
 CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://lead.hajumrahservice.com",
+    "https://www.lead.hajumrahservice.com",
+]
 
 # Swagger Settings
 SWAGGER_SETTINGS = {
