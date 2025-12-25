@@ -13,7 +13,7 @@ DEBUG = config('DEBUG', default=True, cast=bool)
 ALLOWED_HOSTS = [
     'lsm.hajumrahservice.com',
     'www.lsm.hajumrahservice.com',
-    '51.20.91.180',
+    '51.20.96.177',
     'localhost',
     '127.0.0.1',
     ]
@@ -146,6 +146,7 @@ CORS_ALLOWED_ORIGINS = [
     "https://www.lead.hajumrahservice.com",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:5173",
 ]
 
 CORS_ALLOW_CREDENTIALS = True
@@ -153,6 +154,8 @@ CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     "https://lead.hajumrahservice.com",
     "https://www.lead.hajumrahservice.com",
+    "http://localhost:5173",
+    "http://127.0.0.1:3000",
 ]
 
 # Swagger Settings
