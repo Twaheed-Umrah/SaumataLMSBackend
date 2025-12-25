@@ -92,21 +92,25 @@ class UserViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """
         Restrict user visibility based on role
+        Super Admin profile must NEVER appear in users list
         """
         user = self.request.user
-
+    
         if not user.is_authenticated:
             return User.objects.none()
+    
+        # ❌ Super Admin should not appear in list (even for Super Admin)
+        queryset = User.objects.exclude(role='SUPER_ADMIN')
 
         if user.role == 'SUPER_ADMIN':
-            return User.objects.all()
-
+            return queryset
+    
         if user.role == 'TEAM_LEADER':
-            # Team Leader can see all except Super Admin
-            return User.objects.exclude(role='SUPER_ADMIN')
-
+            return queryset
+    
         # Regular users can only see themselves
-        return User.objects.filter(id=user.id)
+        return queryset.filter(id=user.id)
+
 
     # -------------------------
     # CRUD Overrides with permission checks
