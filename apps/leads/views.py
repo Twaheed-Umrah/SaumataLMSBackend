@@ -1,51 +1,46 @@
 import json
-from django.shortcuts import render
+from datetime import datetime, time
 
-# Create your views here.
+from django.utils import timezone
+from django.utils.dateparse import parse_date
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Q
-from django.utils import timezone
-from .models import Lead, LeadActivity, FollowUp
+
+from .models import Lead, FollowUp
 from .serializers import (
     LeadSerializer, LeadDetailSerializer, LeadCreateSerializer,
     LeadUpdateSerializer, LeadConversionSerializer, LeadUploadSerializer,
     LeadActivitySerializer, FollowUpSerializer
 )
 from django.utils.dateparse import parse_date
+
 from .services import (
-    LeadDistributionService, LeadConversionService, LeadActivityService
+    LeadDistributionService,
+    LeadConversionService,
+    LeadActivityService,
 )
 from utils.constants import UserRole, LeadType, LeadStatus
 from utils.permissions import IsTeamLeaderOrSuperAdmin, IsCallerOrAbove
 from utils.response import success_response, error_response, created_response
-from utils.excel import validate_excel_file, parse_excel_leads
-from datetime import datetime, time
-from django.utils.dateparse import parse_date
-from rest_framework import viewsets, status
-
+from utils.excel import parse_excel_leads
 
 
 class LeadViewSet(viewsets.ModelViewSet):
     """
-    Production-safe Lead ViewSet
+    Production-ready Lead ViewSet
     """
-    serializer_class = LeadSerializer
     permission_classes = [IsAuthenticated]
+    serializer_class = LeadSerializer
 
     filterset_fields = ['lead_type', 'status', 'assigned_to']
     search_fields = ['name', 'email', 'phone', 'company']
     ordering_fields = ['created_at', 'updated_at', 'name']
 
-    # -------------------------
-    # BASE QUERYSET (NO FILTER)
-    # -------------------------
+    # =========================
+    # QUERYSET (ROLE BASED)
+    # =========================
     def get_queryset(self):
-        """
-        DO NOT apply business filters here.
-        Only role-based access.
-        """
         user = self.request.user
         qs = Lead.objects.all()
 
@@ -66,37 +61,29 @@ class LeadViewSet(viewsets.ModelViewSet):
 
         return qs.none()
 
-    # -------------------------
-    # SERIALIZERS
-    # -------------------------
+    # =========================
+    # SERIALIZER SWITCH
+    # =========================
     def get_serializer_class(self):
         if self.action == 'retrieve':
             return LeadDetailSerializer
-        elif self.action == 'create':
+        if self.action == 'create':
             return LeadCreateSerializer
-        elif self.action in ['update', 'partial_update']:
+        if self.action in ['update', 'partial_update']:
             return LeadUpdateSerializer
         return LeadSerializer
 
-    # -------------------------
-    # LIST (ACTIVE + FILTERS)
-    # -------------------------
+    # =========================
+    # LIST (ACTIVE LEADS)
+    # =========================
     def list(self, request):
-        """
-        Active leads list (non-converted)
-        Supports: status + date
-        """
         queryset = self.filter_queryset(self.get_queryset())
-
-        # 🔴 Active leads ONLY
         queryset = queryset.exclude(status=LeadStatus.CONVERTED)
 
-        # Status filter
         status_param = request.query_params.get("status")
         if status_param:
             queryset = queryset.filter(status=status_param)
 
-        # Date filters (timezone-safe)
         date = request.query_params.get("date")
         from_date = request.query_params.get("from_date")
         to_date = request.query_params.get("to_date")
@@ -104,8 +91,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         if date:
             parsed = parse_date(date)
             if not parsed:
-                return error_response("Invalid date format. Use YYYY-MM-DD")
-
+                return error_response("Invalid date format (YYYY-MM-DD)")
             start = datetime.combine(parsed, time.min)
             end = datetime.combine(parsed, time.max)
             queryset = queryset.filter(created_at__range=(start, end))
@@ -114,8 +100,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             f = parse_date(from_date)
             t = parse_date(to_date)
             if not f or not t:
-                return error_response("Invalid date format. Use YYYY-MM-DD")
-
+                return error_response("Invalid date format (YYYY-MM-DD)")
             queryset = queryset.filter(created_at__date__range=(f, t))
 
         page = self.paginate_queryset(queryset)
@@ -126,19 +111,208 @@ class LeadViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return success_response(serializer.data, "Leads retrieved successfully")
 
-    # -------------------------
+    # =========================
+    # CREATE LEAD
+    # =========================
+    def create(self, request):
+        serializer = self.get_serializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+
+        lead = serializer.save(uploaded_by=request.user)
+
+        LeadActivityService.log_activity(
+            lead=lead,
+            user=request.user,
+            activity_type="NOTE",
+            description="Lead created"
+        )
+
+        return created_response(
+            LeadSerializer(lead).data,
+            "Lead created successfully"
+        )
+
+    # =========================
+    # UPDATE LEAD
+    # =========================
+    def update(self, request, *args, **kwargs):
+        lead = self.get_object()
+        old_status = lead.status
+
+        serializer = self.get_serializer(
+            lead,
+            data=request.data,
+            partial=kwargs.get("partial", False)
+        )
+
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+
+        lead = serializer.save()
+
+        if "status" in request.data and old_status != lead.status:
+            LeadActivityService.log_status_change(
+                lead=lead,
+                user=request.user,
+                old_status=old_status,
+                new_status=lead.status,
+                notes=request.data.get("notes", "")
+            )
+
+        return success_response(
+            LeadSerializer(lead).data,
+            "Lead updated successfully"
+        )
+
+    # =========================
+    # BULK UPLOAD (EXCEL)
+    # =========================
+    @action(detail=False, methods=["post"], permission_classes=[IsTeamLeaderOrSuperAdmin])
+    def upload(self, request):
+        serializer = LeadUploadSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+
+        file = serializer.validated_data["file"]
+        lead_type = serializer.validated_data["lead_type"]
+
+        column_mapping = request.data.get("mapping")
+        if column_mapping:
+            try:
+                column_mapping = json.loads(column_mapping)
+            except Exception:
+                column_mapping = None
+
+        leads_data, error = parse_excel_leads(file, column_mapping)
+        if error:
+            return error_response(error)
+
+        if not leads_data:
+            return error_response("No valid leads found")
+
+        created, error = LeadDistributionService.distribute_leads(
+            leads_data=leads_data,
+            lead_type=lead_type,
+            uploaded_by=request.user,
+            column_mapping=column_mapping
+        )
+
+        if error:
+            return error_response(error)
+
+        return created_response(
+            {
+                "total": len(leads_data),
+                "successful": len(created),
+                "failed": len(leads_data) - len(created),
+                "lead_type": lead_type,
+            },
+            f"{len(created)} leads uploaded successfully"
+        )
+
+    # =========================
+    # CONVERT LEAD
+    # =========================
+    @action(detail=True, methods=["post"], permission_classes=[IsCallerOrAbove])
+    def convert(self, request, pk=None):
+        lead = self.get_object()
+
+        serializer = LeadConversionSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+
+        converted_lead, error = LeadConversionService.convert_lead(
+            lead=lead,
+            new_type=serializer.validated_data["new_type"],
+            converted_by=request.user,
+            notes=serializer.validated_data.get("notes", ""),
+            assigned_to=serializer.validated_data.get("assigned_to"),
+        )
+
+        if error:
+            return error_response(error)
+
+        return success_response(
+            LeadSerializer(converted_lead).data,
+            "Lead converted successfully"
+        )
+
+    # =========================
+    # ADD ACTIVITY
+    # =========================
+    @action(detail=True, methods=["post"])
+    def add_activity(self, request, pk=None):
+        lead = self.get_object()
+        activity_type = request.data.get("activity_type", "NOTE")
+        description = request.data.get("description")
+
+        if not description:
+            return error_response("Description is required")
+
+        activity = LeadActivityService.log_activity(
+            lead=lead,
+            user=request.user,
+            activity_type=activity_type,
+            description=description
+        )
+
+        return created_response(
+            LeadActivitySerializer(activity).data,
+            "Activity added successfully"
+        )
+
+    # =========================
+    # MY LEADS
+    # =========================
+    @action(detail=False, methods=["get"])
+    def my_leads(self, request):
+        leads = Lead.objects.filter(
+            assigned_to=request.user,
+            converted_by__isnull=True,
+            converted_at__isnull=True,
+            original_type__isnull=True
+        )
+
+        status_param = request.query_params.get("status")
+        if status_param:
+            leads = leads.filter(status=status_param)
+
+        date = request.query_params.get("date")
+        from_date = request.query_params.get("from_date")
+        to_date = request.query_params.get("to_date")
+
+        if date:
+            parsed = parse_date(date)
+            if not parsed:
+                return error_response("Invalid date format")
+            leads = leads.filter(created_at__date=parsed)
+
+        elif from_date and to_date:
+            f = parse_date(from_date)
+            t = parse_date(to_date)
+            if not f or not t:
+                return error_response("Invalid date format")
+            leads = leads.filter(created_at__date__range=(f, t))
+
+        page = self.paginate_queryset(leads)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(leads, many=True)
+        return success_response(serializer.data, "My leads retrieved successfully")
+
+    # =========================
     # CONVERTED LEADS
-    # -------------------------
-    @action(detail=False, methods=['get'])
+    # =========================
+    @action(detail=False, methods=["get"])
     def converted(self, request):
-        """
-        Converted leads only
-        """
         queryset = self.get_queryset().filter(
-              converted_by__isnull=False,
-              converted_at__isnull=False,
-              original_type__isnull=False
-                     )
+            converted_by__isnull=False,
+            converted_at__isnull=False,
+            original_type__isnull=False
+        )
 
         date = request.query_params.get("date")
         if date:
@@ -148,109 +322,10 @@ class LeadViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(converted_at__date=parsed)
 
         serializer = self.get_serializer(queryset, many=True)
-        return success_response(serializer.data, "Converted leads retrieved successfully")
-
-    # -------------------------
-    # MY LEADS
-    # -------------------------
-    @action(detail=False, methods=['get'])
-    def my_leads(self, request):
-        """
-    Leads assigned to current user (active only)
-    Supports: status + date
-    """
-        leads = Lead.objects.filter(
-            assigned_to=request.user,
-            converted_by__isnull=True,
-            converted_at__isnull=True,
-            original_type__isnull=True
+        return success_response(
+            serializer.data,
+            "Converted leads retrieved successfully"
         )
-    
-    # Status filter
-        status_param = request.query_params.get("status")
-        if status_param:
-            leads = leads.filter(status=status_param)
-
-        # Date filters
-        date = request.query_params.get("date")
-        from_date = request.query_params.get("from_date")
-        to_date = request.query_params.get("to_date")
-
-        if date:
-            parsed = parse_date(date)
-            if not parsed:
-                return error_response("Invalid date format. Use YYYY-MM-DD")
-    
-            start = datetime.combine(parsed, time.min)
-            end = datetime.combine(parsed, time.max)
-            leads = leads.filter(created_at__range=(start, end))
-
-        elif from_date and to_date:
-            f = parse_date(from_date)
-            t = parse_date(to_date)
-            if not f or not t:
-                return error_response("Invalid date format. Use YYYY-MM-DD")
-
-            leads = leads.filter(created_at__date__range=(f, t))
-
-        page = self.paginate_queryset(leads)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-
-        serializer = self.get_serializer(leads, many=True)
-        return success_response(serializer.data, "Your leads retrieved successfully")
-
-    # -------------------------
-    # CREATE
-    # -------------------------
-    def create(self, request):
-        serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            lead = serializer.save(uploaded_by=request.user)
-            LeadActivityService.log_activity(
-                lead=lead,
-                user=request.user,
-                activity_type='NOTE',
-                description='Lead created'
-            )
-            return created_response(
-                LeadSerializer(lead).data,
-                "Lead created successfully"
-            )
-        return error_response("Validation failed", serializer.errors)
-
-    # -------------------------
-    # UPDATE
-    # -------------------------
-    def update(self, request, *args, **kwargs):
-        lead = self.get_object()
-        old_status = lead.status
-
-        serializer = self.get_serializer(
-            lead,
-            data=request.data,
-            partial=kwargs.get('partial', False)
-        )
-
-        if serializer.is_valid():
-            lead = serializer.save()
-
-            if 'status' in request.data and old_status != lead.status:
-                LeadActivityService.log_status_change(
-                    lead=lead,
-                    user=request.user,
-                    old_status=old_status,
-                    new_status=lead.status,
-                    notes=request.data.get('notes', '')
-                )
-
-            return success_response(
-                LeadSerializer(lead).data,
-                "Lead updated successfully"
-            )
-
-        return error_response("Validation failed", serializer.errors)
 
 class FollowUpViewSet(viewsets.ModelViewSet):
     """
