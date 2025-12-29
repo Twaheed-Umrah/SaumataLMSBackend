@@ -45,6 +45,16 @@ class IsTeamLeaderOrSuperAdmin(permissions.BasePermission):
             request.user.role in [UserRole.TEAM_LEADER, UserRole.SUPER_ADMIN]
         )
 
+class IsTeamLeaderOrSuperAdminOrLeadDistributer(permissions.BasePermission):
+    """
+    Permission class to check if user is Team Leader or Super Admin
+    """
+    def has_permission(self, request, view):
+        return (
+            request.user and 
+            request.user.is_authenticated and 
+            request.user.role in [UserRole.TEAM_LEADER, UserRole.SUPER_ADMIN,UserRole.LEAD_DISTRIBUTER]
+        )
 
 class IsCallerOrAbove(permissions.BasePermission):
     """
@@ -58,7 +68,8 @@ class IsCallerOrAbove(permissions.BasePermission):
                 UserRole.FRANCHISE_CALLER,
                 UserRole.PACKAGE_CALLER,
                 UserRole.TEAM_LEADER,
-                UserRole.SUPER_ADMIN
+                UserRole.SUPER_ADMIN,
+                UserRole.LEAD_DISTRIBUTER
             ]
         )
     

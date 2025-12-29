@@ -21,7 +21,7 @@ from .services import (
     LeadActivityService,
 )
 from utils.constants import UserRole, LeadType, LeadStatus
-from utils.permissions import IsTeamLeaderOrSuperAdmin, IsCallerOrAbove
+from utils.permissions import IsTeamLeaderOrSuperAdmin, IsCallerOrAbove,IsTeamLeaderOrSuperAdminOrLeadDistributer
 from utils.response import success_response, error_response, created_response
 from utils.excel import parse_excel_leads
 
@@ -44,7 +44,7 @@ class LeadViewSet(viewsets.ModelViewSet):
         user = self.request.user
         qs = Lead.objects.all()
 
-        if user.role in [UserRole.SUPER_ADMIN, UserRole.TEAM_LEADER]:
+        if user.role in [UserRole.SUPER_ADMIN, UserRole.TEAM_LEADER, UserRole.LEAD_DISTRIBUTER,]:
             return qs
 
         if user.role == UserRole.FRANCHISE_CALLER:
@@ -168,7 +168,7 @@ class LeadViewSet(viewsets.ModelViewSet):
     # =========================
     # BULK UPLOAD (EXCEL)
     # =========================
-    @action(detail=False, methods=["post"], permission_classes=[IsTeamLeaderOrSuperAdmin])
+    @action(detail=False, methods=["post"], permission_classes=[IsTeamLeaderOrSuperAdminOrLeadDistributer])
     def upload(self, request):
         serializer = LeadUploadSerializer(data=request.data)
         if not serializer.is_valid():

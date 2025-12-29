@@ -131,7 +131,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if requested_role:
             if user.role == 'TEAM_LEADER':
                 # Team Leader can only create Package Caller and Franchise Caller
-                if requested_role not in ['PACKAGE_CALLER', 'FRANCHISE_CALLER']:
+                if requested_role not in ['PACKAGE_CALLER', 'FRANCHISE_CALLER','LEAD_DISTRIBUTER']:
                     return error_response(
                         "Team Leader can only create Package Caller or Franchise Caller",
                         status_code=status.HTTP_403_FORBIDDEN
@@ -162,7 +162,7 @@ class UserViewSet(viewsets.ModelViewSet):
         if 'role' in request.data and instance.role != request.data['role']:
             if user.role == 'TEAM_LEADER':
                 # Team Leader can only update to Package Caller or Franchise Caller
-                if request.data['role'] not in ['PACKAGE_CALLER', 'FRANCHISE_CALLER']:
+                if request.data['role'] not in ['PACKAGE_CALLER', 'FRANCHISE_CALLER','LEAD_DISTRIBUTER']:
                     return error_response(
                         "Team Leader can only assign Package Caller or Franchise Caller roles",
                         status_code=status.HTTP_403_FORBIDDEN
@@ -210,7 +210,7 @@ class UserViewSet(viewsets.ModelViewSet):
         
         # Team Leader can only delete Package Caller and Franchise Caller
         if user.role == 'TEAM_LEADER':
-            if instance.role in ['PACKAGE_CALLER', 'FRANCHISE_CALLER']:
+            if instance.role in ['PACKAGE_CALLER', 'FRANCHISE_CALLER','LEAD_DISTRIBUTER']:
                 instance.delete()
                 return success_response(message="User deleted successfully")
             else:

@@ -4,12 +4,14 @@ Constants used throughout the application
 
 # User Roles
 class UserRole:
+    LEAD_DISTRIBUTER='LEAD_DISTRIBUTER'
     FRANCHISE_CALLER = 'FRANCHISE_CALLER'
     PACKAGE_CALLER = 'PACKAGE_CALLER'
     TEAM_LEADER = 'TEAM_LEADER'
     SUPER_ADMIN = 'SUPER_ADMIN'
     
     CHOICES = [
+        (LEAD_DISTRIBUTER,'LEAD_DISTRIBUTER'),
         (FRANCHISE_CALLER, 'Franchise Caller'),
         (PACKAGE_CALLER, 'Package Caller'),
         (TEAM_LEADER, 'Team Leader'),
