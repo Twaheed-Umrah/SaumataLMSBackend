@@ -36,6 +36,10 @@ class LeadStatus:
     NOT_INTERESTED = 'NOT_INTERESTED'
     FOLLOW_UP = 'FOLLOW_UP'
     CONVERTED = 'CONVERTED'
+    BUSY='BUSY'
+    RNR='RNR'
+    CALLBACK='CALLBACK'
+    CLOSED='CLOSED'
     LOST = 'LOST'
     
     CHOICES = [
@@ -45,6 +49,10 @@ class LeadStatus:
         (NOT_INTERESTED, 'Not Interested'),
         (FOLLOW_UP, 'Follow Up'),
         (CONVERTED, 'Converted'),
+        (BUSY,'Busy'),
+        (RNR,'Rnr'),
+        (CALLBACK,'Callback'),
+        (CLOSED,'Closed'),
         (LOST, 'Lost'),
     ]
 
