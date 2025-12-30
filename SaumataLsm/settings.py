@@ -1,6 +1,6 @@
 from pathlib import Path
 from decouple import config
-
+from datetime import timedelta
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -71,7 +71,14 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'SaumataLsm.wsgi.application'
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(days=1),   # ✅ 1 Day
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),  # Backup safety
+    'ROTATE_REFRESH_TOKENS': False,
+    'BLACKLIST_AFTER_ROTATION': False,
 
+    'AUTH_HEADER_TYPES': ('Bearer',),
+}
 # Database
 DATABASES = {
     'default': {
