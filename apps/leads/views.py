@@ -326,7 +326,71 @@ class LeadViewSet(viewsets.ModelViewSet):
             serializer.data,
             "Converted leads retrieved successfully"
         )
-
+    # In views.py, add this method to LeadViewSet class
+    @action(detail=False, methods=['post'], permission_classes=[IsTeamLeaderOrSuperAdminOrLeadDistributer])
+    def upload_manual(self, request):
+        """
+        Upload leads and assign to specific caller (manual assignment)
+        """
+        from .serializers import LeadManualUploadSerializer
+        from .services import LeadManualUploadService
+        
+        serializer = LeadManualUploadSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+        
+        file = serializer.validated_data['file']
+        lead_type = serializer.validated_data['lead_type']
+        assigned_to = serializer.validated_data['assigned_to']
+        
+        # Optional column mapping
+        column_mapping = request.data.get('mapping')
+        if column_mapping:
+            try:
+                column_mapping = json.loads(column_mapping)
+            except Exception:
+                column_mapping = None
+        
+        # Upload and assign leads
+        result, error = LeadManualUploadService.upload_and_assign(
+            file=file,
+            lead_type=lead_type,
+            assigned_to=assigned_to,
+            uploaded_by=request.user,
+            column_mapping=column_mapping
+        )
+        
+        if error:
+            return error_response(error)
+        
+        # Prepare response data
+        response_data = {
+            'summary': {
+                'total_rows': result['total_rows'],
+                'successful': result['successful'],
+                'failed': result['failed'],
+                'lead_type': lead_type,
+                'assigned_to': {
+                    'id': assigned_to.id,
+                    'name': assigned_to.get_full_name(),
+                    'email': assigned_to.email
+                }
+            }
+        }
+        
+        # Include failed leads details if any
+        if result['failed'] > 0:
+            response_data['failed_details'] = result['failed_leads'][:10]  # Limit to first 10 failures
+        
+        # Include success leads count by status
+        if result['successful'] > 0:
+            response_data['summary']['leads_created'] = len(result['created_leads'])
+        
+        return created_response(
+            response_data,
+            f"Successfully uploaded {result['successful']} leads and assigned to {assigned_to.get_full_name()}"
+        )
+    
 class FollowUpViewSet(viewsets.ModelViewSet):
     """
     ViewSet for Follow-up operations

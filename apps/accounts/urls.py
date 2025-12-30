@@ -1,7 +1,7 @@
 # urls.py
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
-from .views import UserViewSet,UserStatsAPIView,TeamMembersAPIView
+from .views import UserViewSet,UserStatsAPIView,TeamMembersAPIView,AvailableCallersAPIView
 
 # Map ViewSet actions manually
 user_list = UserViewSet.as_view({
@@ -47,4 +47,5 @@ urlpatterns = [
     path('users/<int:pk>/', user_detail, name='user-detail'),
      path('users/stats/', UserStatsAPIView.as_view(), name='user-stats'),
       path("team-members/", TeamMembersAPIView.as_view(), name="team-members"),
+      path('available-callers/', AvailableCallersAPIView.as_view(), name='available-callers'),
 ]

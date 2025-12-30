@@ -11,6 +11,7 @@ from rest_framework import status
 from django.db.models import Count, Q
 from utils.constants import UserRole
 from django.utils.decorators import method_decorator
+from utils.constants import LeadStatus, UserRole, LeadType
 from django.views.decorators.cache import cache_page
 import logging
 
@@ -594,4 +595,79 @@ class TeamMembersAPIView(APIView):
         return success_response(
             serializer.data,
             "Team members retrieved successfully"
+        )
+    
+class AvailableCallersAPIView(APIView):
+    """
+    API to get available callers for manual lead assignment
+    Returns callers with their current lead counts
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        """
+        Get available callers based on lead type
+        Query param: ?lead_type=FRANCHISE or ?lead_type=PACKAGE
+        """
+        # Get lead type from query parameters
+        lead_type = request.query_params.get('lead_type', '').upper()
+        
+        # Validate lead type
+        if not lead_type:
+            return error_response("Lead type is required", status_code=400)
+        
+        if lead_type not in [LeadType.FRANCHISE, LeadType.PACKAGE]:
+            return error_response(
+                f"Invalid lead type. Must be '{LeadType.FRANCHISE}' or '{LeadType.PACKAGE}'", 
+                status_code=400
+            )
+        
+        # Get user role based on lead type
+        if lead_type == LeadType.FRANCHISE:
+            target_role = UserRole.FRANCHISE_CALLER
+        else:  # lead_type == LeadType.PACKAGE
+            target_role = UserRole.PACKAGE_CALLER
+        
+        # Get available callers (active users with the target role)
+        # with their current lead counts
+        available_callers = User.objects.filter(
+            role=target_role,
+            is_active=True
+        ).annotate(
+            current_leads_count=Count(
+                'assigned_leads',
+                filter=Q(
+                    assigned_leads__status__in=[
+                        LeadStatus.NEW,
+                        LeadStatus.CONTACTED,
+                        LeadStatus.FOLLOW_UP,
+                        LeadStatus.INTERESTED
+                    ]
+                )
+            )
+        ).order_by('first_name', 'last_name')
+        
+        if not available_callers.exists():
+            return success_response(
+                [],
+                f"No active {target_role.replace('_', ' ').title()}s available"
+            )
+        
+        # Serialize data
+        caller_data = [
+            {
+                'id': caller.id,
+                'name': caller.get_full_name(),
+                'email': caller.email,
+                'role': caller.role,
+                'current_leads_count': caller.current_leads_count,
+                'is_active': caller.is_active,
+                'phone': caller.phone if hasattr(caller, 'phone') else None
+            }
+            for caller in available_callers
+        ]
+        
+        return success_response(
+            caller_data,
+            f"Available {lead_type} callers retrieved successfully"
         )

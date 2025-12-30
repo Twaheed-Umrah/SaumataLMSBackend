@@ -35,7 +35,7 @@ followup_detail = FollowUpViewSet.as_view({
     'patch': 'partial_update',
     'put': 'update'
 })
-
+lead_upload_manual = LeadViewSet.as_view({'post': 'upload_manual'})
 followup_complete = FollowUpViewSet.as_view({'post': 'complete'})
 followup_pending = FollowUpViewSet.as_view({'get': 'pending'})
 
@@ -51,7 +51,7 @@ urlpatterns = [
     path('leads/<int:pk>/', lead_detail, name='lead-detail'),
     path('leads/<int:pk>/convert/', lead_convert, name='lead-convert'),
     path('leads/<int:pk>/activity/', lead_add_activity, name='lead-add-activity'),
-
+    path('leads/upload/manual/', lead_upload_manual, name='lead-upload-manual'),
     # =========================
     # FollowUp APIs
     # =========================

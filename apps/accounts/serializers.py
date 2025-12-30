@@ -232,3 +232,18 @@ class TokenRefreshSerializer(serializers.Serializer):
     Serializer for refreshing access token
     """
     refresh = serializers.CharField(required=True)
+
+# In serializers.py, add this serializer
+class AvailableCallerSerializer(serializers.ModelSerializer):
+    """
+    Serializer for available callers with lead count
+    """
+    name = serializers.SerializerMethodField()
+    current_leads_count = serializers.IntegerField()
+    
+    class Meta:
+        model = User
+        fields = ['id', 'name', 'email', 'role', 'current_leads_count', 'is_active']
+    
+    def get_name(self, obj):
+        return obj.get_full_name()

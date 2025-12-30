@@ -174,3 +174,115 @@ class LeadActivityService:
             old_status=old_status,
             new_status=new_status
         )
+    
+# In services.py, add this class
+class LeadManualUploadService:
+    """
+    Service for manually uploading leads and assigning to specific caller
+    """
+    
+    @staticmethod
+    def upload_and_assign(file, lead_type, assigned_to, uploaded_by, column_mapping=None):
+        """
+        Upload leads from file and assign to specific caller
+        """
+        # Parse Excel file
+        leads_data, error = parse_excel_leads(file, column_mapping)
+        if error:
+            return None, error
+        
+        if not leads_data:
+            return [], "No valid leads found in the file"
+        
+        created_leads = []
+        failed_leads = []
+        
+        with transaction.atomic():
+            for idx, lead_data in enumerate(leads_data):
+                # Validate required fields
+                if not lead_data.get('name') or not lead_data.get('phone'):
+                    failed_leads.append({
+                        'row': idx + 2,  # +2 because Excel is 1-indexed and header row
+                        'data': lead_data,
+                        'reason': 'Missing name or phone'
+                    })
+                    continue
+                
+                # Clean phone number
+                phone = lead_data['phone']
+                if not phone:
+                    failed_leads.append({
+                        'row': idx + 2,
+                        'data': lead_data,
+                        'reason': 'Empty phone number'
+                    })
+                    continue
+                
+                # Remove non-numeric characters
+                phone = ''.join(filter(str.isdigit, str(phone)))
+                
+                # Remove country code if present
+                if phone.startswith('91') and len(phone) == 12:
+                    phone = phone[2:]
+                elif len(phone) > 10:
+                    phone = phone[-10:]  # Take last 10 digits
+                
+                # Validate phone number (Indian mobile numbers)
+                if len(phone) != 10 or not phone.startswith(('6', '7', '8', '9')):
+                    failed_leads.append({
+                        'row': idx + 2,
+                        'data': lead_data,
+                        'reason': f'Invalid phone number: {lead_data["phone"]}'
+                    })
+                    continue
+                
+                # Check for duplicate phone numbers
+                existing_lead = Lead.objects.filter(phone=phone).first()
+                if existing_lead:
+                    failed_leads.append({
+                        'row': idx + 2,
+                        'data': lead_data,
+                        'reason': f'Duplicate phone number: {phone}'
+                    })
+                    continue
+                
+                try:
+                    # Create lead
+                    lead = Lead.objects.create(
+                        name=lead_data.get('name', '').strip(),
+                        email=lead_data.get('email', '').strip() or None,
+                        phone=phone,
+                        company=lead_data.get('company', '').strip() or None,
+                        city=lead_data.get('city', '').strip() or None,
+                        state=lead_data.get('state', '').strip() or None,
+                        notes=lead_data.get('notes', '').strip() or None,
+                        lead_type=lead_type,
+                        status=LeadStatus.NEW,
+                        assigned_to=assigned_to,
+                        uploaded_by=uploaded_by
+                    )
+                    
+                    # Log activity
+                    LeadActivity.objects.create(
+                        lead=lead,
+                        user=uploaded_by,
+                        activity_type='NOTE',
+                        description=f'Lead manually uploaded and assigned to {assigned_to.get_full_name()}'
+                    )
+                    
+                    created_leads.append(lead)
+                    
+                except Exception as e:
+                    failed_leads.append({
+                        'row': idx + 2,
+                        'data': lead_data,
+                        'reason': f'Error creating lead: {str(e)}'
+                    })
+        
+        return {
+            'created_leads': created_leads,
+            'failed_leads': failed_leads,
+            'total_rows': len(leads_data),
+            'successful': len(created_leads),
+            'failed': len(failed_leads)
+        }, None

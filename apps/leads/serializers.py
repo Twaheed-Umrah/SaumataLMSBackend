@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Lead, LeadActivity, FollowUp
 from apps.accounts.serializers import UserSerializer
+from utils.constants import UserRole
 from django.contrib.auth import get_user_model
 User = get_user_model()
 
@@ -121,3 +122,36 @@ class LeadUploadSerializer(serializers.Serializer):
     """
     file = serializers.FileField()
     lead_type = serializers.ChoiceField(choices=['FRANCHISE', 'PACKAGE'])
+
+# In serializers.py, add this serializer
+class LeadManualUploadSerializer(serializers.Serializer):
+    """
+    Serializer for manual lead upload with caller assignment
+    """
+    file = serializers.FileField()
+    lead_type = serializers.ChoiceField(choices=['FRANCHISE', 'PACKAGE'])
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        required=True
+    )
+    
+    def validate(self, data):
+        user = data['assigned_to']
+        lead_type = data['lead_type']
+        
+        # Check if user is active
+        if not user.is_active:
+            raise serializers.ValidationError("Cannot assign to inactive user")
+        
+        # Check if user role matches lead type
+        if lead_type == 'FRANCHISE' and user.role != UserRole.FRANCHISE_CALLER:
+            raise serializers.ValidationError(
+                "Franchise leads can only be assigned to franchise callers"
+            )
+        
+        if lead_type == 'PACKAGE' and user.role != UserRole.PACKAGE_CALLER:
+            raise serializers.ValidationError(
+                "Package leads can only be assigned to package callers"
+            )
+        
+        return data
