@@ -1,7 +1,7 @@
 from rest_framework import serializers
-from .models import Lead, LeadActivity, FollowUp
+from .models import Lead, LeadActivity, FollowUp, PulledLead
 from apps.accounts.serializers import UserSerializer
-from utils.constants import UserRole
+from utils.constants import LeadStatus, LeadType, UserRole
 from django.contrib.auth import get_user_model
 User = get_user_model()
 
@@ -155,3 +155,130 @@ class LeadManualUploadSerializer(serializers.Serializer):
             )
         
         return data
+    
+
+# Add to serializers.py
+
+class PullLeadByIdsSerializer(serializers.Serializer):
+    """
+    Pull specific leads by their IDs
+    """
+    lead_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        min_length=1,
+        max_length=500
+    )
+    pull_reason = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=500
+    )
+
+
+class PullLeadByFiltersSerializer(serializers.Serializer):
+    """
+    Pull leads by various filters
+    """
+    # Caller filter (can use one or both)
+    caller_id = serializers.IntegerField(required=False)
+    caller_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=False,
+        allow_empty=True
+    )
+    
+    # Date filters
+    from_date = serializers.DateField(required=False)
+    to_date = serializers.DateField(required=False)
+    
+    # Lead properties
+    lead_type = serializers.ChoiceField(
+        choices=LeadType.CHOICES,
+        required=False
+    )
+    status = serializers.ChoiceField(
+        choices=LeadStatus.CHOICES,
+        required=False
+    )
+    statuses = serializers.ListField(
+        child=serializers.ChoiceField(choices=LeadStatus.CHOICES),
+        required=False,
+        allow_empty=True
+    )
+    
+    # Pull options
+    pull_reason = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=500
+    )
+    limit = serializers.IntegerField(
+        min_value=1,
+        max_value=1000,
+        default=300,
+        required=False
+    )
+    
+    def validate(self, data):
+        """
+        Validate that at least one filter is provided
+        """
+        filters_provided = any([
+            'caller_id' in data,
+            'caller_ids' in data and data['caller_ids'],
+            'from_date' in data,
+            'to_date' in data,
+            'status' in data,
+            'statuses' in data and data['statuses'],
+            'lead_type' in data,
+        ])
+        
+        if not filters_provided:
+            raise serializers.ValidationError(
+                "At least one filter criteria must be provided"
+            )
+        
+        return data
+
+
+class PulledLeadSerializer(serializers.ModelSerializer):
+    """
+    Serializer for PulledLead model
+    """
+    pulled_by_name = serializers.CharField(source='pulled_by.get_full_name', read_only=True)
+    pulled_from_name = serializers.CharField(source='pulled_from.get_full_name', read_only=True)
+    original_lead_type_display = serializers.CharField(source='get_original_lead_type_display', read_only=True)
+    original_status_display = serializers.CharField(source='get_original_status_display', read_only=True)
+    
+    class Meta:
+        model = PulledLead
+        fields = [
+            'id', 'original_lead_id', 'name', 'email', 'phone', 'company', 
+            'city', 'state', 'notes', 'original_lead_type', 'original_lead_type_display',
+            'original_status', 'original_status_display', 'pulled_by', 'pulled_by_name', 
+            'pulled_from', 'pulled_from_name', 'pull_reason', 'filter_criteria',
+            'exported', 'exported_at', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id','original_lead_id', 'pulled_by', 'pulled_from', 'created_at', 'updated_at',
+            'exported', 'exported_at', 'filter_criteria'
+        ]
+
+
+class PulledLeadExportSerializer(serializers.ModelSerializer):
+    """
+    Serializer for exporting pulled leads (matches upload format)
+    """
+    class Meta:
+        model = PulledLead
+        fields = ['name', 'email', 'phone', 'company', 'city', 'state', 'notes']
+
+
+class PulledLeadsForUploadSerializer(serializers.Serializer):
+    """
+    Serializer for preparing pulled leads for upload
+    """
+    pulled_lead_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        min_length=1
+    )

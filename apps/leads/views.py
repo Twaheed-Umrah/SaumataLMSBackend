@@ -3,22 +3,29 @@ from datetime import datetime, time
 
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+from rest_framework.response import Response
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-
-from .models import Lead, FollowUp
+from rest_framework.views import APIView
+from apps.accounts.models import User
+from django.db.models import Q
+from .models import Lead, FollowUp,PulledLead
 from .serializers import (
     LeadSerializer, LeadDetailSerializer, LeadCreateSerializer,
     LeadUpdateSerializer, LeadConversionSerializer, LeadUploadSerializer,
-    LeadActivitySerializer, FollowUpSerializer
+    LeadActivitySerializer, FollowUpSerializer,PullLeadByIdsSerializer,
+    PullLeadByFiltersSerializer,
+    PulledLeadSerializer,
+    PulledLeadsForUploadSerializer
 )
 from django.utils.dateparse import parse_date
-
+from django.http import HttpResponse
 from .services import (
     LeadDistributionService,
     LeadConversionService,
     LeadActivityService,
+     LeadPullService
 )
 from utils.constants import UserRole, LeadType, LeadStatus
 from utils.permissions import IsTeamLeaderOrSuperAdmin, IsCallerOrAbove,IsTeamLeaderOrSuperAdminOrLeadDistributer
@@ -441,3 +448,698 @@ class FollowUpViewSet(viewsets.ModelViewSet):
         followups = self.get_queryset().filter(completed=False)
         serializer = self.get_serializer(followups, many=True)
         return success_response(serializer.data, "Pending follow-ups retrieved successfully")
+    
+
+# In apps/leads/views.py (add these new views)
+from rest_framework import status
+from django.shortcuts import get_object_or_404
+
+
+class CallerPresenceManagementAPIView(APIView):
+    """
+    API for team leaders/super admins to manage caller presence status
+    """
+    permission_classes = [IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def patch(self, request, caller_id=None):
+        """
+        Update a specific caller's presence status
+        PATCH /api/leads/callers/<id>/presence/
+        {
+            "is_present": false
+        }
+        """
+        try:
+            caller = User.objects.get(id=caller_id, is_active=True)
+            
+            # Check if user is a caller
+            if caller.role not in [UserRole.FRANCHISE_CALLER, UserRole.PACKAGE_CALLER]:
+                return error_response("User is not a caller", status_code=400)
+            
+            # Update is_present status
+            is_present = request.data.get('is_present')
+            if is_present is None:
+                return error_response("is_present field is required", status_code=400)
+            
+            old_status = caller.is_present
+            caller.is_present = bool(is_present)
+            caller.save()
+            
+            action = "marked as present" if caller.is_present else "marked as not present"
+            message = f"{caller.get_full_name()} has been {action}"
+            
+            if old_status != caller.is_present:
+                # Log this action (optional)
+                print(f"Caller {caller.id} presence changed from {old_status} to {caller.is_present} by {request.user.email}")
+            
+            return success_response(
+                {
+                    'id': caller.id,
+                    'name': caller.get_full_name(),
+                    'email': caller.email,
+                    'role': caller.role,
+                    'is_present': caller.is_present,
+                    'previous_status': old_status
+                },
+                message
+            )
+            
+        except User.DoesNotExist:
+            return error_response("Caller not found", status_code=404)
+
+
+class BulkCallerPresenceAPIView(APIView):
+    """
+    API for bulk operations on caller presence status
+    """
+    permission_classes = [IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def post(self, request):
+        """
+        Bulk update caller presence status
+        POST /api/leads/callers/bulk-presence/
+        {
+            "caller_ids": [1, 2, 3],
+            "is_present": true/false
+        }
+        OR
+        {
+            "lead_type": "FRANCHISE",  # or "PACKAGE"
+            "is_present": true/false,
+            "all": true
+        }
+        """
+        caller_ids = request.data.get('caller_ids', [])
+        lead_type = request.data.get('lead_type', '').upper()
+        is_present = request.data.get('is_present')
+        all_callers = request.data.get('all', False)
+        
+        if is_present is None:
+            return error_response("is_present field is required", status_code=400)
+        
+        is_present_bool = bool(is_present)
+        
+        # Get queryset based on input
+        if all_callers and lead_type:
+            # Validate lead type
+            if lead_type not in [LeadType.FRANCHISE, LeadType.PACKAGE]:
+                return error_response(
+                    f"Invalid lead type. Must be '{LeadType.FRANCHISE}' or '{LeadType.PACKAGE}'", 
+                    status_code=400
+                )
+            
+            # Get role based on lead type
+            if lead_type == LeadType.FRANCHISE:
+                role = UserRole.FRANCHISE_CALLER
+            else:
+                role = UserRole.PACKAGE_CALLER
+            
+            # Get all active callers of this type
+            callers = User.objects.filter(role=role, is_active=True)
+            action = f"all {lead_type.lower()} callers"
+            
+        elif caller_ids:
+            # Update specific callers
+            callers = User.objects.filter(
+                id__in=caller_ids,
+                is_active=True,
+                role__in=[UserRole.FRANCHISE_CALLER, UserRole.PACKAGE_CALLER]
+            )
+            action = f"{callers.count()} caller(s)"
+            
+        else:
+            return error_response(
+                "Either provide caller_ids or lead_type with all=true", 
+                status_code=400
+            )
+        
+        if not callers.exists():
+            return error_response("No valid callers found to update", status_code=404)
+        
+        # Update in bulk
+        updated_count = callers.update(is_present=is_present_bool)
+        
+        status_text = "present" if is_present_bool else "not present"
+        return success_response(
+            {
+                'updated_count': updated_count,
+                'is_present': is_present_bool,
+                'lead_type': lead_type if all_callers else None,
+                'action': 'bulk_update'
+            },
+            f"{updated_count} caller(s) marked as {status_text}"
+        )
+    
+    def get(self, request):
+        """
+        Get summary of caller presence status by lead type
+        GET /api/leads/callers/bulk-presence/?lead_type=FRANCHISE
+        """
+        lead_type = request.query_params.get('lead_type', '').upper()
+        
+        if not lead_type:
+            return error_response("lead_type query parameter is required", status_code=400)
+        
+        if lead_type not in [LeadType.FRANCHISE, LeadType.PACKAGE]:
+            return error_response(
+                f"Invalid lead type. Must be '{LeadType.FRANCHISE}' or '{LeadType.PACKAGE}'", 
+                status_code=400
+            )
+        
+        # Get role based on lead type
+        if lead_type == LeadType.FRANCHISE:
+            role = UserRole.FRANCHISE_CALLER
+        else:
+            role = UserRole.PACKAGE_CALLER
+        
+        # Get presence statistics
+        from django.db.models import Count, Case, When, Value, IntegerField
+        
+        stats = User.objects.filter(
+            role=role,
+            is_active=True
+        ).aggregate(
+            total=Count('id'),
+            present=Count(Case(When(is_present=True, then=Value(1)), output_field=IntegerField())),
+            not_present=Count(Case(When(is_present=False, then=Value(1)), output_field=IntegerField()))
+        )
+        
+        # Get list of callers
+        callers = User.objects.filter(role=role, is_active=True).values(
+            'id', 'first_name', 'last_name', 'email', 'is_present'
+        ).order_by('is_present', 'first_name')
+        
+        return success_response(
+            {
+                'lead_type': lead_type,
+                'statistics': stats,
+                'callers': list(callers)
+            },
+            f"Presence status for {lead_type} callers"
+        )
+    
+
+class LeadPullByIDsView(APIView):
+    """
+    API for pulling leads by specific IDs - MOVES leads
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def post(self, request):
+        """
+        Pull specific leads by their IDs - MOVES them to PulledLead table
+        """
+        serializer = PullLeadByIdsSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+        
+        pulled_leads, failed_leads, deleted_leads = LeadPullService.pull_leads_by_ids(
+            lead_ids=serializer.validated_data['lead_ids'],
+            pulled_by=request.user,
+            pull_reason=serializer.validated_data.get('pull_reason', '')
+        )
+        
+        response_data = {
+            'successful': len(pulled_leads),
+            'failed': len(failed_leads),
+            'deleted_from_leads_table': len(deleted_leads),
+            'total_requested': len(serializer.validated_data['lead_ids']),
+            'action': 'MOVED (not copied)'
+        }
+        
+        if failed_leads:
+            response_data['failed_details'] = failed_leads[:10]
+        
+        if deleted_leads:
+            response_data['deleted_leads_ids'] = [lead['id'] for lead in deleted_leads]
+        
+        message = f"Successfully MOVED {len(pulled_leads)} leads from Lead table to PulledLead table"
+        if failed_leads:
+            message += f", {len(failed_leads)} failed"
+        
+        return success_response(response_data, message)
+
+
+class LeadPullByFiltersView(APIView):
+    """
+    API for pulling leads by filters - MOVES leads
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def post(self, request):
+        """
+        Pull leads using advanced filters - MOVES them to PulledLead table
+        """
+        serializer = PullLeadByFiltersSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+        
+        pulled_leads, failed_leads, deleted_leads = LeadPullService.pull_leads_by_filters(
+            filters=serializer.validated_data,
+            pulled_by=request.user
+        )
+        
+        response_data = {
+            'successful': len(pulled_leads),
+            'failed': len(failed_leads),
+            'deleted_from_leads_table': len(deleted_leads),
+            'filters_applied': serializer.validated_data,
+            'action': 'MOVED (not copied)'
+        }
+        
+        if deleted_leads:
+            response_data['deleted_leads_count'] = len(deleted_leads)
+        
+        message = f"Successfully MOVED {len(pulled_leads)} leads from Lead table to PulledLead table using filters"
+        if failed_leads:
+            message += f", {len(failed_leads)} failed"
+        
+        return success_response(response_data, message)
+
+class PulledLeadsListView(APIView):
+    """
+    API for viewing pulled leads with filters
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def get(self, request):
+        """
+        Get list of pulled leads with various filters
+        GET /api/leads/pulled/
+        
+        Query Parameters:
+        - caller_id: Filter by caller
+        - status: Filter by original status (RNR, CONTACTED, etc.)
+        - lead_type: Filter by lead type
+        - exported: true/false (filter by export status)
+        - from_date: Filter from date
+        - to_date: Filter to date
+        - search: Search in name, phone, email
+        - page: Page number
+        - page_size: Items per page
+        """
+        queryset = LeadPullService.get_pulled_leads_queryset(request.user)
+        
+        # Apply filters
+        caller_id = request.query_params.get('caller_id')
+        if caller_id:
+            queryset = queryset.filter(pulled_from__id=caller_id)
+        
+        status = request.query_params.get('status')
+        if status:
+            queryset = queryset.filter(original_status=status)
+        
+        lead_type = request.query_params.get('lead_type')
+        if lead_type:
+            queryset = queryset.filter(original_lead_type=lead_type)
+        
+        exported = request.query_params.get('exported')
+        if exported is not None:
+            queryset = queryset.filter(exported=exported.lower() == 'true')
+        
+        # Date filters
+        from_date = request.query_params.get('from_date')
+        to_date = request.query_params.get('to_date')
+        
+        if from_date:
+            from_date_parsed = parse_date(from_date)
+            if from_date_parsed:
+                queryset = queryset.filter(created_at__date__gte=from_date_parsed)
+        
+        if to_date:
+            to_date_parsed = parse_date(to_date)
+            if to_date_parsed:
+                queryset = queryset.filter(created_at__date__lte=to_date_parsed)
+        
+        # Search
+        search = request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) |
+                Q(phone__icontains=search) |
+                Q(email__icontains=search) |
+                Q(company__icontains=search)
+            )
+        
+        # Ordering
+        order_by = request.query_params.get('order_by', '-created_at')
+        if order_by.lstrip('-') in ['name', 'phone', 'created_at', 'original_status']:
+            queryset = queryset.order_by(order_by)
+        
+        # Pagination
+        try:
+            page_size = int(request.query_params.get('page_size', 20))
+            page = int(request.query_params.get('page', 1))
+        except ValueError:
+            page_size = 20
+            page = 1
+        
+        start = (page - 1) * page_size
+        end = start + page_size
+        
+        total_count = queryset.count()
+        leads = queryset[start:end]
+        
+        serializer = PulledLeadSerializer(leads, many=True)
+        
+        return success_response({
+            'results': serializer.data,
+            'count': total_count,
+            'page': page,
+            'page_size': page_size,
+            'total_pages': (total_count + page_size - 1) // page_size
+        }, "Pulled leads retrieved successfully")
+
+
+class PulledLeadsExportView(APIView):
+    """
+    Export Pulled Leads to Excel
+
+    Rules:
+    - If NO data → return JSON message (NO Excel)
+    - If data exists → return Excel
+    - exported=true / false → always export if data exists
+    - exported_at updated only when Excel is generated
+    """
+
+    def get(self, request, *args, **kwargs):
+        filters = {}
+    
+        filters["lead_type"] = request.query_params.get("lead_type")
+    
+        from_date = request.query_params.get("from_date")
+        to_date = request.query_params.get("to_date")
+    
+        if from_date:
+            filters["from_date"] = parse_date(from_date)
+        if to_date:
+            filters["to_date"] = parse_date(to_date)
+    
+        caller_id = request.query_params.get("caller_id")
+        if caller_id:
+            filters["caller_id"] = caller_id
+    
+        pulled_lead_ids = request.query_params.getlist("pulled_lead_ids")
+    
+        excel_file, error = LeadPullService.export_pulled_leads_to_excel(
+            pulled_lead_ids=pulled_lead_ids or None,
+            filters=filters
+        )
+    
+        if error:
+            return Response(
+                {"success": False, "message": error},
+                status=400
+            )
+    
+        response = HttpResponse(
+            excel_file.getvalue(),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        response["Content-Disposition"] = 'attachment; filename="pulled_leads.xlsx"'
+    
+        return response
+
+
+
+class PulledLeadsStatisticsView(APIView):
+    """
+    API for getting statistics about pulled leads
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def get(self, request):
+        """
+        Get statistics about pulled leads
+        GET /api/leads/pulled/statistics/
+        
+        Query Parameters:
+        - caller_id: Filter statistics by caller
+        - from_date: Filter from date
+        - to_date: Filter to date
+        - lead_type: Filter by lead type
+        """
+        # Get base statistics
+        stats = LeadPullService.get_lead_pull_statistics(request.user)
+        
+        # Apply additional filters if provided
+        caller_id = request.query_params.get('caller_id')
+        from_date = request.query_params.get('from_date')
+        to_date = request.query_params.get('to_date')
+        lead_type = request.query_params.get('lead_type')
+        
+        if any([caller_id, from_date, to_date, lead_type]):
+            # Get filtered queryset
+            queryset = LeadPullService.get_pulled_leads_queryset(request.user)
+            
+            if caller_id:
+                queryset = queryset.filter(pulled_from__id=caller_id)
+            
+            if from_date:
+                from_date_parsed = parse_date(from_date)
+                if from_date_parsed:
+                    queryset = queryset.filter(created_at__date__gte=from_date_parsed)
+            
+            if to_date:
+                to_date_parsed = parse_date(to_date)
+                if to_date_parsed:
+                    queryset = queryset.filter(created_at__date__lte=to_date_parsed)
+            
+            if lead_type:
+                queryset = queryset.filter(original_lead_type=lead_type)
+            
+            # Calculate filtered statistics
+            from django.db.models import Count, Q
+            
+            filtered_stats = queryset.aggregate(
+                total_pulled=Count('id'),
+                exported=Count('id', filter=Q(exported=True)),
+                not_exported=Count('id', filter=Q(exported=False)),
+                
+            )
+            
+            # Group by status
+            status_stats = list(
+                queryset.values('original_status')
+                .annotate(count=Count('id'))
+                .order_by('-count')
+            )
+            
+            # Group by lead type
+            type_stats = list(
+                queryset.values('original_lead_type')
+                .annotate(count=Count('id'))
+                .order_by('-count')
+            )
+            
+            stats['filtered'] = {
+                'overall': filtered_stats,
+                'by_status': status_stats,
+                'by_lead_type': type_stats,
+                'filters_applied': {
+                    'caller_id': caller_id,
+                    'from_date': from_date,
+                    'to_date': to_date,
+                    'lead_type': lead_type
+                }
+            }
+        
+        return success_response(stats, "Pulled leads statistics retrieved")
+
+
+class PulledLeadsPrepareUploadView(APIView):
+    """
+    API for preparing pulled leads for upload
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def post(self, request):
+        """
+        Get pulled leads data in upload format
+        POST /api/leads/pulled/prepare-upload/
+        
+        Returns the actual lead data that can be used to create an Excel file
+        for upload using the existing upload_manual API
+        """
+        serializer = PulledLeadsForUploadSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+        
+        upload_data = LeadPullService.get_pulled_leads_for_upload(
+            serializer.validated_data['pulled_lead_ids']
+        )
+        
+        return success_response(
+            {
+                'leads': upload_data,
+                'count': len(upload_data),
+                'format': 'upload_ready'
+            },
+            f"Prepared {len(upload_data)} leads for upload"
+        )
+
+
+class BulkLeadPullPreviewView(APIView):
+    """
+    API for previewing which leads will be pulled
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def post(self, request):
+        """
+        Preview leads that match filter criteria before pulling
+        POST /api/leads/pull/preview/
+        
+        Returns leads that match the criteria without actually pulling them
+        """
+        serializer = PullLeadByFiltersSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+        
+        filters = serializer.validated_data
+        
+        # Build query similar to service but without pulling
+        query = Q()
+        
+        # Filter by caller(s)
+        if 'caller_id' in filters:
+            query &= Q(assigned_to__id=filters['caller_id'])
+        elif 'caller_ids' in filters and filters['caller_ids']:
+            query &= Q(assigned_to__id__in=filters['caller_ids'])
+        
+        # Filter by date range
+        if 'from_date' in filters and filters['from_date']:
+            from_datetime = timezone.make_aware(
+                datetime.combine(filters['from_date'], time.min)
+            )
+            query &= Q(created_at__gte=from_datetime)
+        
+        if 'to_date' in filters and filters['to_date']:
+            to_datetime = timezone.make_aware(
+                datetime.combine(filters['to_date'], time.max)
+            )
+            query &= Q(created_at__lte=to_datetime)
+        
+        # Filter by lead type
+        if 'lead_type' in filters and filters['lead_type']:
+            query &= Q(lead_type=filters['lead_type'])
+        
+        # Filter by status
+        if 'status' in filters and filters['status']:
+            query &= Q(status=filters['status'])
+        elif 'statuses' in filters and filters['statuses']:
+            query &= Q(status__in=filters['statuses'])
+        
+        # Get leads
+        limit = filters.get('limit', 300)
+        leads = Lead.objects.filter(query).order_by('-created_at')[:limit]
+        
+        # Check for already pulled leads
+        lead_data = []
+        for lead in leads:
+            already_pulled = PulledLead.objects.filter(
+                phone=lead.phone,
+                pulled_from=lead.assigned_to,
+                exported=False
+            ).exists()
+            
+            lead_data.append({
+                'id': lead.id,
+                'name': lead.name,
+                'phone': lead.phone,
+                'email': lead.email,
+                'status': lead.status,
+                'lead_type': lead.lead_type,
+                'assigned_to': {
+                    'id': lead.assigned_to.id if lead.assigned_to else None,
+                    'name': lead.assigned_to.get_full_name() if lead.assigned_to else None
+                },
+                'created_at': lead.created_at,
+                'already_pulled': already_pulled,
+                'can_be_pulled': not already_pulled and lead.assigned_to is not None
+            })
+        
+        return success_response(
+            {
+                'preview_leads': lead_data,
+                'total_matched': len(leads),
+                'can_be_pulled': sum(1 for l in lead_data if l['can_be_pulled']),
+                'already_pulled': sum(1 for l in lead_data if l['already_pulled']),
+                'filters_applied': filters
+            },
+            f"Preview: {len(leads)} leads match the criteria"
+        )
+
+
+class CallerLeadsSummaryView(APIView):
+    """
+    API for getting summary of leads by caller
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def get(self, request):
+        """
+        Get summary of leads by caller for easier pulling
+        GET /api/leads/pull/caller-summary/
+        
+        Returns count of leads by status for each caller
+        """
+        from django.db.models import Count
+        
+        # Get all active callers
+        franchise_callers = User.objects.filter(
+            role=UserRole.FRANCHISE_CALLER,
+            is_active=True
+        )
+        package_callers = User.objects.filter(
+            role=UserRole.PACKAGE_CALLER,
+            is_active=True
+        )
+        
+        caller_summary = []
+        
+        # Process franchise callers
+        for caller in franchise_callers:
+            leads_summary = Lead.objects.filter(
+                assigned_to=caller,
+                lead_type=LeadType.FRANCHISE
+            ).values('status').annotate(count=Count('id'))
+            
+            caller_summary.append({
+                'id': caller.id,
+                'name': caller.get_full_name(),
+                'email': caller.email,
+                'role': caller.role,
+                'lead_type': LeadType.FRANCHISE,
+                'status_summary': list(leads_summary),
+                'total_leads': sum(item['count'] for item in leads_summary)
+            })
+        
+        # Process package callers
+        for caller in package_callers:
+            leads_summary = Lead.objects.filter(
+                assigned_to=caller,
+                lead_type=LeadType.PACKAGE
+            ).values('status').annotate(count=Count('id'))
+            
+            caller_summary.append({
+                'id': caller.id,
+                'name': caller.get_full_name(),
+                'email': caller.email,
+                'role': caller.role,
+                'lead_type': LeadType.PACKAGE,
+                'status_summary': list(leads_summary),
+                'total_leads': sum(item['count'] for item in leads_summary)
+            })
+        
+        # Sort by total leads descending
+        caller_summary.sort(key=lambda x: x['total_leads'], reverse=True)
+        
+        return success_response(
+            {
+                'callers': caller_summary,
+                'total_franchise_callers': franchise_callers.count(),
+                'total_package_callers': package_callers.count()
+            },
+            "Caller leads summary retrieved"
+        )

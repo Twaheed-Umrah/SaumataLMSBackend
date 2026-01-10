@@ -1,3 +1,4 @@
+from datetime import datetime, time
 from django.db import transaction
 from django.utils import timezone
 from apps.accounts.models import User
@@ -8,9 +9,13 @@ from utils.excel import parse_excel_leads
 
 class LeadDistributionService:
     @staticmethod
-    def get_callers_by_type(lead_type):
+    def get_callers_by_type(lead_type, include_non_present=False):
         """
         Get active callers based on lead type
+        Args:
+            lead_type: FRANCHISE or PACKAGE
+            include_non_present: If True, include all callers regardless of is_present status
+                                If False, only include callers with is_present=True (default)
         """
         if lead_type == LeadType.FRANCHISE:
             role = UserRole.FRANCHISE_CALLER
@@ -19,15 +24,28 @@ class LeadDistributionService:
         else:
             role = UserRole.FRANCHISE_CALLER
         
-        return User.objects.filter(role=role, is_active=True).order_by('id')
+        queryset = User.objects.filter(role=role, is_active=True)
+        
+        # 🔥 Only include callers who are present (unless explicitly overridden)
+        if not include_non_present:
+            queryset = queryset.filter(is_present=True)
+        
+        return queryset.order_by('id')
+    
     @staticmethod
     def distribute_leads(leads_data, lead_type, uploaded_by, column_mapping=None):
         """
-        Distribute leads equally among callers
+        Distribute leads equally among present callers
         """
-        callers = LeadDistributionService.get_callers_by_type(lead_type)
+        # 🔥 Get only present callers for auto distribution
+        callers = LeadDistributionService.get_callers_by_type(lead_type, include_non_present=False)
         
         if not callers.exists():
+            # Try to get all callers to show error message
+            all_callers = LeadDistributionService.get_callers_by_type(lead_type, include_non_present=True)
+            if all_callers.exists():
+                non_present_callers = all_callers.filter(is_present=False)
+                return None, f"No active and present {lead_type} callers found. {non_present_callers.count()} caller(s) are marked as not present."
             return None, f"No active {lead_type} callers found"
         
         # Create leads and distribute
@@ -87,14 +105,14 @@ class LeadDistributionService:
                     lead=lead,
                     user=uploaded_by,
                     activity_type='NOTE',
-                    description=f'Lead uploaded and assigned to {assigned_caller.get_full_name()}'
+                    description=f'Lead auto-distributed and assigned to {assigned_caller.get_full_name()}'
                 )
                 
                 created_leads.append(lead)
                 caller_index += 1
         
         return created_leads, None
-
+    
 class LeadConversionService:
     """
     Service for converting leads between types
@@ -286,3 +304,377 @@ class LeadManualUploadService:
             'successful': len(created_leads),
             'failed': len(failed_leads)
         }, None
+    
+
+# Add to services.py
+
+class LeadPullService:
+    """
+    Service for pulling leads from callers
+    """
+    @staticmethod
+    def pull_leads_by_ids(lead_ids, pulled_by, pull_reason=''):
+        """
+        Pull specific leads by IDs - MOVES them to PulledLead table
+        """
+        from .models import Lead, PulledLead, LeadActivity
+        
+        pulled_leads = []
+        failed_leads = []
+        deleted_leads = []  # Track deleted leads
+        
+        with transaction.atomic():
+            for lead_id in lead_ids:
+                try:
+                    lead = Lead.objects.get(id=lead_id)
+                    
+                    # Check if already pulled and not exported
+                    existing_pulled = PulledLead.objects.filter(
+                        phone=lead.phone,
+                        pulled_from=lead.assigned_to,
+                        exported=False
+                    ).exists()
+                    
+                    if existing_pulled:
+                        failed_leads.append({
+                            'lead_id': lead_id,
+                            'reason': 'Lead already pulled and not exported'
+                        })
+                        continue
+                    
+                    # Check if lead is assigned
+                    if not lead.assigned_to:
+                        failed_leads.append({
+                            'lead_id': lead_id,
+                            'reason': 'Lead is not assigned'
+                        })
+                        continue
+                    
+                    # 🟢 CRITICAL CHANGE: Create pulled lead record BEFORE deleting original
+                    pulled_lead = PulledLead.objects.create(
+                        original_lead_id=lead.id,  # Store original ID before deletion
+                        name=lead.name,
+                        email=lead.email,
+                        phone=lead.phone,
+                        company=lead.company,
+                        city=lead.city,
+                        state=lead.state,
+                        notes=lead.notes,
+                        original_lead_type=lead.lead_type,
+                        original_status=lead.status,
+                        pulled_by=pulled_by,
+                        pulled_from=lead.assigned_to,
+                        pull_reason=pull_reason,
+                        filter_criteria={
+                            'method': 'by_ids',
+                            'lead_ids': [lead_id],
+                            'deleted_from_lead_table': True  # Flag that this was moved, not copied
+                        }
+                    )
+                    
+                    # 🟢 CRITICAL CHANGE: Store lead data before deletion for activity log
+                    lead_data_before_delete = {
+                        'id': lead.id,
+                        'name': lead.name,
+                        'phone': lead.phone,
+                        'status': lead.status,
+                        'lead_type': lead.lead_type,
+                        'assigned_to': lead.assigned_to.get_full_name() if lead.assigned_to else None
+                    }
+                    
+                    # 🟢 CRITICAL CHANGE: DELETE from Lead table
+                    lead.delete()
+                    deleted_leads.append(lead_data_before_delete)
+                    
+                    # Log activity (we can't log on original lead anymore, but log in PulledLead notes)
+                    pulled_lead.notes = f"{pulled_lead.notes}\n\n--- PULL LOG ---\nLead MOVED (not copied) from Lead table.\nOriginal Lead ID: {lead_data_before_delete['id']}\nPulled by: {pulled_by.get_full_name()}\nReason: {pull_reason}\nDate: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    pulled_lead.save()
+                    
+                    pulled_leads.append(pulled_lead)
+                    
+                except Lead.DoesNotExist:
+                    failed_leads.append({
+                        'lead_id': lead_id,
+                        'reason': 'Lead not found'
+                    })
+                except Exception as e:
+                    failed_leads.append({
+                        'lead_id': lead_id,
+                        'reason': str(e)
+                    })
+        
+        return pulled_leads, failed_leads, deleted_leads
+    
+    @staticmethod
+    def pull_leads_by_filters(filters, pulled_by):
+        """
+        Pull leads using advanced filters - MOVES them to PulledLead table
+        """
+        from .models import Lead, PulledLead
+        from django.db.models import Q
+        
+        # Build query
+        query = Q()
+        
+        # Filter by caller(s)
+        if 'caller_id' in filters:
+            query &= Q(assigned_to__id=filters['caller_id'])
+        elif 'caller_ids' in filters and filters['caller_ids']:
+            query &= Q(assigned_to__id__in=filters['caller_ids'])
+        
+        # Filter by date range
+        if 'from_date' in filters and filters['from_date']:
+            from_datetime = timezone.make_aware(
+                datetime.combine(filters['from_date'], time.min)
+            )
+            query &= Q(created_at__gte=from_datetime)
+        
+        if 'to_date' in filters and filters['to_date']:
+            to_datetime = timezone.make_aware(
+                datetime.combine(filters['to_date'], time.max)
+            )
+            query &= Q(created_at__lte=to_datetime)
+        
+        # Filter by lead type
+        if 'lead_type' in filters and filters['lead_type']:
+            query &= Q(lead_type=filters['lead_type'])
+        
+        # Filter by status
+        if 'status' in filters and filters['status']:
+            query &= Q(status=filters['status'])
+        elif 'statuses' in filters and filters['statuses']:
+            query &= Q(status__in=filters['statuses'])
+        
+        # Get leads
+        limit = filters.get('limit', 300)
+        leads = Lead.objects.filter(query).order_by('-created_at')[:limit]
+        
+        if not leads:
+            return [], [], []
+        
+        # Pull (MOVE) the leads
+        pulled_leads = []
+        failed_leads = []
+        deleted_leads = []
+        
+        with transaction.atomic():
+            for lead in leads:
+                try:
+                    # Check if already pulled and not exported
+                    existing_pulled = PulledLead.objects.filter(
+                        phone=lead.phone,
+                        pulled_from=lead.assigned_to,
+                        exported=False
+                    ).exists()
+                    
+                    if existing_pulled:
+                        continue
+                    
+                    # 🟢 CRITICAL CHANGE: Create pulled lead record
+                    pulled_lead = PulledLead.objects.create(
+                        original_lead_id=lead.id,  # Store original ID
+                        name=lead.name,
+                        email=lead.email,
+                        phone=lead.phone,
+                        company=lead.company,
+                        city=lead.city,
+                        state=lead.state,
+                        notes=lead.notes,
+                        original_lead_type=lead.lead_type,
+                        original_status=lead.status,
+                        pulled_by=pulled_by,
+                        pulled_from=lead.assigned_to,
+                        pull_reason=filters.get('pull_reason', ''),
+                        filter_criteria={
+                            **filters,
+                            'deleted_from_lead_table': True,
+                            'original_lead_id': lead.id
+                        }
+                    )
+                    
+                    # 🟢 CRITICAL CHANGE: Store data before deletion
+                    lead_data_before_delete = {
+                        'id': lead.id,
+                        'name': lead.name,
+                        'phone': lead.phone
+                    }
+                    
+                    # 🟢 CRITICAL CHANGE: DELETE from Lead table
+                    lead.delete()
+                    deleted_leads.append(lead_data_before_delete)
+                    
+                    # Update notes with pull log
+                    pulled_lead.notes = f"{pulled_lead.notes}\n\n--- PULL LOG ---\nLead MOVED from Lead table.\nOriginal Lead ID: {lead_data_before_delete['id']}\nPulled using filters\nDate: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    pulled_lead.save()
+                    
+                    pulled_leads.append(pulled_lead)
+                    
+                except Exception as e:
+                    failed_leads.append({
+                        'lead_id': lead.id,
+                        'reason': str(e)
+                    })
+        
+        return pulled_leads, failed_leads, deleted_leads
+
+    @staticmethod
+    def get_pulled_leads_queryset(user):
+        """
+        Get queryset based on user role
+        """
+        from .models import PulledLead
+        
+        queryset = PulledLead.objects.all()
+        
+        if user.role == UserRole.SUPER_ADMIN:
+            return queryset
+        
+        if user.role in [UserRole.TEAM_LEADER, UserRole.LEAD_DISTRIBUTER]:
+            return queryset.filter(pulled_by=user)
+        
+        return queryset.none()
+    
+    @staticmethod
+    def export_pulled_leads_to_excel(pulled_lead_ids=None, filters=None):
+        import pandas as pd
+        from io import BytesIO
+        from django.utils import timezone
+        from django.db.models import Q
+        from .models import PulledLead
+    
+        query = Q()
+    
+        # -------- selected leads --------
+        if pulled_lead_ids:
+            query &= Q(id__in=pulled_lead_ids)
+    
+        # -------- FIXED lead_type field --------
+        if filters.get("lead_type"):
+            query &= Q(original_lead_type=filters["lead_type"])
+    
+        # -------- date filters --------
+        if filters.get("from_date"):
+            query &= Q(created_at__date__gte=filters["from_date"])
+    
+        if filters.get("to_date"):
+            query &= Q(created_at__date__lte=filters["to_date"])
+    
+        # -------- caller filter --------
+        if filters.get("caller_id"):
+            query &= Q(pulled_by_id=filters["caller_id"])
+    
+        pulled_leads = PulledLead.objects.filter(query)
+    
+        # ❌ NO DATA
+        if not pulled_leads.exists():
+            return None, "No lead found to export"
+    
+        # ✅ Excel data
+        data = [{
+            "Name": l.name,
+            "Email": l.email or "",
+            "Phone": l.phone,
+            "Company": l.company or "",
+            "City": l.city or "",
+            "State": l.state or "",
+        } for l in pulled_leads]
+    
+        df = pd.DataFrame(data)
+    
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Pulled Leads")
+    
+        output.seek(0)
+
+        # ✅ ALWAYS update exported status when Excel is generated
+        pulled_leads.update(
+            exported=True,
+            exported_at=timezone.now()
+        )
+    
+        return output, None
+
+
+    @staticmethod
+    def get_pulled_leads_for_upload(pulled_lead_ids):
+        """
+        Get pulled leads data for uploading
+        """
+        from .models import PulledLead
+        
+        pulled_leads = PulledLead.objects.filter(
+            id__in=pulled_lead_ids,
+            exported=True  # Only exported leads can be uploaded
+        )
+        
+        # Convert to upload format
+        upload_data = []
+        for lead in pulled_leads:
+            upload_data.append({
+                'name': lead.name,
+                'email': lead.email,
+                'phone': lead.phone,
+                'company': lead.company,
+                'city': lead.city,
+                'state': lead.state,
+                'notes': lead.notes,
+            })
+        
+        return upload_data
+    
+    @staticmethod
+    def get_lead_pull_statistics(user):
+        """
+        Get statistics about pulled leads
+        """
+        from .models import PulledLead
+        from django.db.models import Count, Q
+        
+        queryset = LeadPullService.get_pulled_leads_queryset(user)
+        
+        # FIXED: Use different names for aggregate results
+        stats = queryset.aggregate(
+            total_pulled_count=Count('id'),  # Changed from total_pulled
+            exported_count=Count('id', filter=Q(exported=True)),  # Changed from exported
+            not_exported_count=Count('id', filter=Q(exported=False)),  # Changed from not_exported
+            total_franchise_leads=Count('id', filter=Q(original_lead_type='FRANCHISE')),
+            total_package_leads=Count('id', filter=Q(original_lead_type='PACKAGE')),
+        )
+        
+        # Group by status
+        status_stats = list(
+            queryset.values('original_status')
+            .annotate(count=Count('id'))
+            .order_by('-count')
+        )
+        
+        # Group by lead type
+        type_stats = list(
+            queryset.values('original_lead_type')
+            .annotate(count=Count('id'))
+            .order_by('-count')
+        )
+        
+        # Group by caller
+        caller_stats = list(
+            queryset.values(
+                'pulled_from__first_name', 
+                'pulled_from__last_name'
+            )
+            .annotate(count=Count('id'))
+            .order_by('-count')[:10]
+        )
+        
+        return {
+            'overall': {
+                'total': stats['total_pulled_count'],
+                'exported': stats['exported_count'],
+                'not_exported': stats['not_exported_count'],
+                'total_franchise_leads': stats['total_franchise_leads'],
+                'total_package_leads': stats['total_package_leads'],
+            },
+            'by_status': status_stats,
+            'by_lead_type': type_stats,
+            'by_caller': caller_stats,
+        }

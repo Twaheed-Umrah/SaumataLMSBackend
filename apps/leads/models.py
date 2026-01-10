@@ -176,3 +176,74 @@ class FollowUp(models.Model):
     
     def __str__(self):
         return f"Follow up for {self.lead.name} on {self.scheduled_date}"
+    
+# Add to models.py (after existing models, don't modify existing ones)
+
+class PulledLead(models.Model):
+    """
+    Store leads that have been pulled out from callers
+    Note: Original leads remain unchanged in Lead table
+    """
+    # Reference to original lead (optional)
+    original_lead_id = models.IntegerField(null=True, blank=True, help_text="ID of the original lead before deletion")
+    
+    # Lead data (copied from original)
+    name = models.CharField(max_length=255)
+    email = models.EmailField(blank=True, null=True)
+    phone = models.CharField(max_length=15, db_index=True)
+    company = models.CharField(max_length=255, blank=True, null=True)
+    city = models.CharField(max_length=100, blank=True, null=True)
+    state = models.CharField(max_length=100, blank=True, null=True)
+    notes = models.TextField(blank=True, null=True)
+    
+    # Lead classification from original
+    original_lead_type = models.CharField(max_length=20, choices=LeadType.CHOICES)
+    original_status = models.CharField(max_length=20, choices=LeadStatus.CHOICES)
+    
+    # Pull metadata
+    pulled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='pulled_leads'
+    )
+    pulled_from = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='leads_pulled_from'
+    )
+    pull_reason = models.TextField(blank=True, null=True)
+    
+    # Filter criteria used for pulling
+    filter_criteria = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Stores the filter criteria used for pulling"
+    )
+    
+    # Track if exported/downloaded
+    exported = models.BooleanField(default=False)
+    exported_at = models.DateTimeField(null=True, blank=True)
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'pulled_leads'
+        verbose_name = 'Pulled Lead'
+        verbose_name_plural = 'Pulled Leads'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['phone']),
+            models.Index(fields=['pulled_by']),
+            models.Index(fields=['pulled_from']),
+            models.Index(fields=['original_status']),
+            models.Index(fields=['original_lead_type']),
+            models.Index(fields=['created_at']),
+            models.Index(fields=['original_lead_id']),  # New index
+        ]
+    
+    def __str__(self):
+        return f"{self.name} - {self.phone} (Pulled)"

@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import LeadViewSet, FollowUpViewSet
+from .views import BulkCallerPresenceAPIView, LeadViewSet, FollowUpViewSet,CallerPresenceManagementAPIView,LeadPullByIDsView,LeadPullByFiltersView,PulledLeadsListView,PulledLeadsExportView,PulledLeadsStatisticsView,PulledLeadsPrepareUploadView,BulkLeadPullPreviewView,CallerLeadsSummaryView
 
 # =========================
 # Lead ViewSet mappings
@@ -38,7 +38,16 @@ followup_detail = FollowUpViewSet.as_view({
 lead_upload_manual = LeadViewSet.as_view({'post': 'upload_manual'})
 followup_complete = FollowUpViewSet.as_view({'post': 'complete'})
 followup_pending = FollowUpViewSet.as_view({'get': 'pending'})
-
+caller_presence = CallerPresenceManagementAPIView.as_view()
+bulk_caller_presence = BulkCallerPresenceAPIView.as_view()
+pull_by_ids = LeadPullByIDsView.as_view()
+pull_by_filters = LeadPullByFiltersView.as_view()
+pulled_leads_list = PulledLeadsListView.as_view()
+pulled_leads_export = PulledLeadsExportView.as_view()
+pulled_leads_stats = PulledLeadsStatisticsView.as_view()
+pulled_prepare_upload = PulledLeadsPrepareUploadView.as_view()
+pull_preview = BulkLeadPullPreviewView.as_view()
+caller_summary = CallerLeadsSummaryView.as_view()
 
 urlpatterns = [
     # =========================
@@ -59,4 +68,17 @@ urlpatterns = [
     path('followups/pending/', followup_pending, name='followup-pending'),
     path('followups/<int:pk>/', followup_detail, name='followup-detail'),
     path('followups/<int:pk>/complete/', followup_complete, name='followup-complete'),
+    path('callers/<int:caller_id>/presence/', caller_presence, name='caller-presence'),
+    path('callers/bulk-presence/', bulk_caller_presence, name='bulk-caller-presence'),
+
+     path('leads/pull/by-ids/', pull_by_ids, name='lead-pull-by-ids'),
+    path('leads/pull/by-filters/', pull_by_filters, name='lead-pull-by-filters'),
+    path('leads/pull/preview/', pull_preview, name='lead-pull-preview'),
+    path('leads/pull/caller-summary/', caller_summary, name='caller-leads-summary'),
+    
+    path('leads/pulled/', pulled_leads_list, name='pulled-leads-list'),
+    path('leads/pulled/export/', pulled_leads_export, name='pulled-leads-export'),
+    path('leads/pulled/statistics/', pulled_leads_stats, name='pulled-leads-stats'),
+    path('leads/pulled/prepare-upload/', pulled_prepare_upload, name='pulled-prepare-upload'),
+    
 ]

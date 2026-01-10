@@ -1,6 +1,5 @@
 import random
 from datetime import timedelta
-
 from django.db import models
 from django.utils import timezone
 from django.core.validators import RegexValidator, validate_email
@@ -62,6 +61,12 @@ class User(AbstractUser):
         null=True
     )
 
+    # 🔥 NEW FIELD: Track if caller is present for auto distribution
+    is_present = models.BooleanField(
+        default=True,
+        help_text="If false, caller will not receive leads in auto distribution"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -72,6 +77,9 @@ class User(AbstractUser):
     class Meta:
         db_table = 'users'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['role', 'is_present', 'is_active']),
+        ]
 
     def __str__(self):
         return self.email
@@ -87,3 +95,12 @@ class User(AbstractUser):
         )
 
         return otp_code
+
+    @property
+    def is_available_for_distribution(self):
+        """Check if user is available for auto lead distribution"""
+        return (
+            self.is_active and 
+            self.is_present and
+            self.role in [UserRole.FRANCHISE_CALLER, UserRole.PACKAGE_CALLER]
+        )

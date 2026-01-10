@@ -608,9 +608,11 @@ class AvailableCallersAPIView(APIView):
         """
         Get available callers based on lead type
         Query param: ?lead_type=FRANCHISE or ?lead_type=PACKAGE
+        Optional param: ?include_non_present=true (default: false)
         """
         # Get lead type from query parameters
         lead_type = request.query_params.get('lead_type', '').upper()
+        include_non_present = request.query_params.get('include_non_present', 'false').lower() == 'true'
         
         # Validate lead type
         if not lead_type:
@@ -628,12 +630,18 @@ class AvailableCallersAPIView(APIView):
         else:  # lead_type == LeadType.PACKAGE
             target_role = UserRole.PACKAGE_CALLER
         
-        # Get available callers (active users with the target role)
-        # with their current lead counts
-        available_callers = User.objects.filter(
+        # Build queryset
+        queryset = User.objects.filter(
             role=target_role,
             is_active=True
-        ).annotate(
+        )
+        
+        # 🔥 Filter by is_present unless explicitly requested otherwise
+        if not include_non_present:
+            queryset = queryset.filter(is_present=True)
+        
+        # Get available callers with their current lead counts
+        available_callers = queryset.annotate(
             current_leads_count=Count(
                 'assigned_leads',
                 filter=Q(
@@ -648,10 +656,13 @@ class AvailableCallersAPIView(APIView):
         ).order_by('first_name', 'last_name')
         
         if not available_callers.exists():
-            return success_response(
-                [],
-                f"No active {target_role.replace('_', ' ').title()}s available"
-            )
+            message = f"No active {target_role.replace('_', ' ').title()}s available"
+            if not include_non_present:
+                all_callers = User.objects.filter(role=target_role, is_active=True)
+                non_present_count = all_callers.filter(is_present=False).count()
+                if non_present_count > 0:
+                    message += f". {non_present_count} caller(s) are marked as not present."
+            return success_response([], message)
         
         # Serialize data
         caller_data = [
@@ -662,12 +673,17 @@ class AvailableCallersAPIView(APIView):
                 'role': caller.role,
                 'current_leads_count': caller.current_leads_count,
                 'is_active': caller.is_active,
+                'is_present': caller.is_present,  # 🔥 Include is_present status
                 'phone': caller.phone if hasattr(caller, 'phone') else None
             }
             for caller in available_callers
         ]
         
+        message = f"Available {lead_type} callers retrieved successfully"
+        if include_non_present:
+            message += " (including non-present callers)"
+        
         return success_response(
             caller_data,
-            f"Available {lead_type} callers retrieved successfully"
+            message
         )
