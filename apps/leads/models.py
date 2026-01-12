@@ -247,3 +247,32 @@ class PulledLead(models.Model):
     
     def __str__(self):
         return f"{self.name} - {self.phone} (Pulled)"
+    
+
+class PulledLeadTransferLog(models.Model):
+    """
+    Simple log for tracking transfers (minimal storage)
+    """
+    original_pulled_lead_id = models.IntegerField(help_text="Original PulledLead ID")
+    transferred_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='received_transfers'
+    )
+    transferred_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='performed_transfers'
+    )
+    transferred_at = models.DateTimeField(auto_now_add=True)
+    lead_count = models.IntegerField(default=1)
+    filters_used = models.JSONField(default=dict, blank=True)
+    
+    class Meta:
+        db_table = 'pulled_lead_transfer_logs'
+        ordering = ['-transferred_at']
+    
+    def __str__(self):
+        return f"Transferred {self.lead_count} leads to {self.transferred_to}"

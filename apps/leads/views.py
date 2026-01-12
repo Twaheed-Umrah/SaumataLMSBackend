@@ -17,7 +17,7 @@ from .serializers import (
     LeadActivitySerializer, FollowUpSerializer,PullLeadByIdsSerializer,
     PullLeadByFiltersSerializer,
     PulledLeadSerializer,
-    PulledLeadsForUploadSerializer
+    PulledLeadsForUploadSerializer,TransferPulledLeadsSerializer,TransferByFiltersSerializer,TransferPreviewSerializer
 )
 from django.utils.dateparse import parse_date
 from django.http import HttpResponse
@@ -25,7 +25,7 @@ from .services import (
     LeadDistributionService,
     LeadConversionService,
     LeadActivityService,
-     LeadPullService
+     LeadPullService,LeadTransferService
 )
 from utils.constants import UserRole, LeadType, LeadStatus
 from utils.permissions import IsTeamLeaderOrSuperAdmin, IsCallerOrAbove,IsTeamLeaderOrSuperAdminOrLeadDistributer
@@ -1143,3 +1143,184 @@ class CallerLeadsSummaryView(APIView):
             },
             "Caller leads summary retrieved"
         )
+    
+
+class TransferPulledLeadsView(APIView):
+    """
+    MOVE leads from PulledLeads to Lead table (DELETE from PulledLeads)
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def post(self, request):
+        """
+        Transfer selected pulled leads to a caller
+        POST /api/leads/transfer/pulled/
+        {
+            "pulled_lead_ids": [1, 2, 3],
+            "assigned_to": 5,
+            "notes": "Transfer these leads"
+        }
+        """
+        serializer = TransferPulledLeadsSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+        
+        # Transfer leads
+        transferred_leads, failed_transfers = LeadTransferService.transfer_pulled_leads(
+            pulled_lead_ids=serializer.validated_data['pulled_lead_ids'],
+            assigned_to=serializer.validated_data['assigned_to'],
+            transferred_by=request.user,
+            notes=serializer.validated_data.get('notes', '')
+        )
+        
+        response_data = {
+            'action': 'MOVE (not copy)',
+            'moved_to_lead_table': len(transferred_leads),
+            'deleted_from_pulled_leads': len(transferred_leads),
+            'failed': len(failed_transfers),
+            'transferred_leads': transferred_leads,
+            'assigned_to': {
+                'id': serializer.validated_data['assigned_to'].id,
+                'name': serializer.validated_data['assigned_to'].get_full_name(),
+                'role': serializer.validated_data['assigned_to'].role
+            }
+        }
+        
+        if failed_transfers:
+            response_data['failed_details'] = failed_transfers[:10]
+        
+        message = f"Moved {len(transferred_leads)} leads from PulledLeads to {serializer.validated_data['assigned_to'].get_full_name()}"
+        if failed_transfers:
+            message += f", {len(failed_transfers)} failed"
+        
+        return success_response(response_data, message)
+
+
+class TransferByFiltersView(APIView):
+    """
+    Transfer pulled leads using filters
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def post(self, request):
+        """
+        Transfer pulled leads using filters
+        POST /api/leads/transfer/by-filters/
+        {
+            "from_date": "2024-01-01",
+            "to_date": "2024-01-31",
+            "status": "RNR",
+            "lead_type": "FRANCHISE",
+            "limit": 50,
+            "assigned_to": 5,
+            "notes": "Transfer RNR leads from January"
+        }
+        """
+        serializer = TransferByFiltersSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+        
+        # Extract filters
+        filters = {
+            'from_date': serializer.validated_data.get('from_date'),
+            'to_date': serializer.validated_data.get('to_date'),
+            'status': serializer.validated_data.get('status'),
+            'lead_type': serializer.validated_data.get('lead_type'),
+            'exported': serializer.validated_data.get('exported'),
+            'limit': serializer.validated_data.get('limit', 100)
+        }
+        
+        # Transfer by filters
+        transferred_leads, failed_transfers, error = LeadTransferService.transfer_by_filters(
+            filters=filters,
+            assigned_to=serializer.validated_data['assigned_to'],
+            transferred_by=request.user,
+            notes=serializer.validated_data.get('notes', '')
+        )
+        
+        if error:
+            return error_response(error)
+        
+        response_data = {
+            'action': 'MOVE (not copy)',
+            'moved_to_lead_table': len(transferred_leads),
+            'deleted_from_pulled_leads': len(transferred_leads),
+            'failed': len(failed_transfers),
+            'filters_applied': filters,
+            'assigned_to': {
+                'id': serializer.validated_data['assigned_to'].id,
+                'name': serializer.validated_data['assigned_to'].get_full_name()
+            }
+        }
+        
+        message = f"Moved {len(transferred_leads)} leads using filters to {serializer.validated_data['assigned_to'].get_full_name()}"
+        
+        return success_response(response_data, message)
+
+
+class PreviewTransferByFiltersView(APIView):
+    """
+    Preview which pulled leads will be transferred using filters
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def post(self, request):
+        """
+        Preview transfer by filters
+        POST /api/leads/transfer/preview-filters/
+        {
+            "from_date": "2024-01-01",
+            "to_date": "2024-01-31",
+            "status": "RNR",
+            "lead_type": "FRANCHISE",
+            "limit": 50
+        }
+        """
+        serializer = TransferPreviewSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+        
+        # Get assigned_to from query params (optional for preview)
+        assigned_to_id = request.query_params.get('assigned_to')
+        assigned_to = None
+        if assigned_to_id:
+            try:
+                assigned_to = User.objects.get(id=assigned_to_id, is_active=True)
+            except User.DoesNotExist:
+                pass
+        
+        # Extract filters
+        filters = {
+            'from_date': serializer.validated_data.get('from_date'),
+            'to_date': serializer.validated_data.get('to_date'),
+            'status': serializer.validated_data.get('status'),
+            'lead_type': serializer.validated_data.get('lead_type'),
+            'exported': serializer.validated_data.get('exported'),
+            'limit': serializer.validated_data.get('limit', 50)
+        }
+        
+        # Get preview
+        preview_data = LeadTransferService.preview_transfer_by_filters(filters, assigned_to)
+        
+        # Calculate statistics
+        total = len(preview_data)
+        can_transfer = sum(1 for item in preview_data if item['can_transfer'])
+        cannot_transfer = total - can_transfer
+        
+        return success_response({
+            'preview': preview_data,
+            'statistics': {
+                'total_matching': total,
+                'can_be_transferred': can_transfer,
+                'cannot_be_transferred': cannot_transfer,
+                'filters_applied': filters
+            },
+            'assigned_to': {
+                'id': assigned_to.id if assigned_to else None,
+                'name': assigned_to.get_full_name() if assigned_to else None
+            }
+        }, f"Preview: {can_transfer} leads can be transferred")

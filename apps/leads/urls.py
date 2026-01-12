@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import BulkCallerPresenceAPIView, LeadViewSet, FollowUpViewSet,CallerPresenceManagementAPIView,LeadPullByIDsView,LeadPullByFiltersView,PulledLeadsListView,PulledLeadsExportView,PulledLeadsStatisticsView,PulledLeadsPrepareUploadView,BulkLeadPullPreviewView,CallerLeadsSummaryView
+from .views import BulkCallerPresenceAPIView, LeadViewSet, FollowUpViewSet,CallerPresenceManagementAPIView,LeadPullByIDsView,LeadPullByFiltersView,PulledLeadsListView,PulledLeadsExportView,PulledLeadsStatisticsView,PulledLeadsPrepareUploadView,BulkLeadPullPreviewView,CallerLeadsSummaryView,TransferPulledLeadsView,TransferByFiltersView,PreviewTransferByFiltersView
 
 # =========================
 # Lead ViewSet mappings
@@ -48,6 +48,9 @@ pulled_leads_stats = PulledLeadsStatisticsView.as_view()
 pulled_prepare_upload = PulledLeadsPrepareUploadView.as_view()
 pull_preview = BulkLeadPullPreviewView.as_view()
 caller_summary = CallerLeadsSummaryView.as_view()
+transfer_pulled_leads = TransferPulledLeadsView.as_view()
+transfer_by_filters = TransferByFiltersView.as_view()
+preview_transfer_filters = PreviewTransferByFiltersView.as_view()
 
 urlpatterns = [
     # =========================
@@ -80,5 +83,10 @@ urlpatterns = [
     path('leads/pulled/export/', pulled_leads_export, name='pulled-leads-export'),
     path('leads/pulled/statistics/', pulled_leads_stats, name='pulled-leads-stats'),
     path('leads/pulled/prepare-upload/', pulled_prepare_upload, name='pulled-prepare-upload'),
+
+    path('leads/transfer/pulled/', transfer_pulled_leads, name='transfer-pulled-leads'),
+    path('leads/transfer/by-filters/', transfer_by_filters, name='transfer-by-filters'),
+    path('leads/transfer/preview-filters/', preview_transfer_filters, name='preview-transfer-filters'),
+
     
 ]

@@ -678,3 +678,240 @@ class LeadPullService:
             'by_lead_type': type_stats,
             'by_caller': caller_stats,
         }
+
+
+class LeadTransferService:
+    """
+    Service for MOVING leads from PulledLeads to Lead table
+    """
+    
+    @staticmethod
+    def transfer_pulled_leads(pulled_lead_ids, assigned_to, transferred_by, notes=''):
+        """
+        MOVE leads from PulledLeads to Lead table (DELETE from PulledLeads)
+        """
+        from .models import Lead, PulledLead
+        
+        transferred_leads = []
+        failed_transfers = []
+        
+        with transaction.atomic():
+            for pulled_lead_id in pulled_lead_ids:
+                try:
+                    # Get pulled lead
+                    pulled_lead = PulledLead.objects.get(id=pulled_lead_id)
+                    
+                    # Check if lead already exists in Lead table (duplicate phone)
+                    existing_lead = Lead.objects.filter(phone=pulled_lead.phone).first()
+                    if existing_lead:
+                        failed_transfers.append({
+                            'pulled_lead_id': pulled_lead_id,
+                            'phone': pulled_lead.phone,
+                            'reason': 'Lead with this phone already exists in Lead table'
+                        })
+                        continue
+                    
+                    # Create lead in Lead table
+                    lead = Lead.objects.create(
+                        name=pulled_lead.name,
+                        email=pulled_lead.email,
+                        phone=pulled_lead.phone,
+                        company=pulled_lead.company,
+                        city=pulled_lead.city,
+                        state=pulled_lead.state,
+                        notes=f"{pulled_lead.notes or ''}\n\n--- TRANSFERRED FROM PULLED LEADS ---\nOriginal PulledLead ID: {pulled_lead_id}\nOriginal Status: {pulled_lead.original_status}\nTransferred by: {transferred_by.get_full_name()}\nDate: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}\nNotes: {notes}",
+                        lead_type=pulled_lead.original_lead_type,
+                        status=LeadStatus.NEW,  # Reset to NEW
+                        assigned_to=assigned_to,
+                        uploaded_by=transferred_by
+                    )
+                    
+                    # Log activity
+                    LeadActivity.objects.create(
+                        lead=lead,
+                        user=transferred_by,
+                        activity_type='TRANSFER',
+                        description=f'Lead transferred from PulledLeads database. Originally pulled from: {pulled_lead.pulled_from.get_full_name() if pulled_lead.pulled_from else "Unknown"}. Assigned to: {assigned_to.get_full_name()}.'
+                    )
+                    
+                    # 🟢 CRITICAL: DELETE from PulledLeads table
+                    pulled_lead.delete()
+                    
+                    transferred_leads.append({
+                        'new_lead_id': lead.id,
+                        'original_pulled_lead_id': pulled_lead_id,
+                        'name': lead.name,
+                        'phone': lead.phone,
+                        'assigned_to': assigned_to.get_full_name(),
+                        'lead_type': lead.lead_type,
+                        'status': lead.status
+                    })
+                    
+                except PulledLead.DoesNotExist:
+                    failed_transfers.append({
+                        'pulled_lead_id': pulled_lead_id,
+                        'reason': 'Pulled lead not found'
+                    })
+                except Exception as e:
+                    failed_transfers.append({
+                        'pulled_lead_id': pulled_lead_id,
+                        'reason': str(e)
+                    })
+        
+        return transferred_leads, failed_transfers
+    
+    @staticmethod
+    def transfer_by_filters(filters, assigned_to, transferred_by, notes=''):
+        """
+        Transfer leads from PulledLeads using filters
+        """
+        from .models import PulledLead, Lead
+        from django.db.models import Q
+        
+        # Build query
+        query = Q()
+        
+        # Filter by date
+        if 'from_date' in filters and filters['from_date']:
+            from_datetime = timezone.make_aware(
+                datetime.combine(filters['from_date'], time.min)
+            )
+            query &= Q(created_at__gte=from_datetime)
+        
+        if 'to_date' in filters and filters['to_date']:
+            to_datetime = timezone.make_aware(
+                datetime.combine(filters['to_date'], time.max)
+            )
+            query &= Q(created_at__lte=to_datetime)
+        
+        # Filter by status
+        if 'status' in filters and filters['status']:
+            query &= Q(original_status=filters['status'])
+        
+        # Filter by lead type
+        if 'lead_type' in filters and filters['lead_type']:
+            query &= Q(original_lead_type=filters['lead_type'])
+        
+        # Filter by exported status (optional)
+        if 'exported' in filters:
+            query &= Q(exported=filters['exported'])
+        
+        # Get pulled leads
+        limit = filters.get('limit', 100)
+        pulled_leads = PulledLead.objects.filter(query).order_by('-created_at')[:limit]
+        
+        if not pulled_leads.exists():
+            return [], [], "No leads found matching the criteria"
+        
+        # Transfer leads
+        transferred_leads = []
+        failed_transfers = []
+        
+        with transaction.atomic():
+            for pulled_lead in pulled_leads:
+                try:
+                    # Check for duplicates
+                    if Lead.objects.filter(phone=pulled_lead.phone).exists():
+                        failed_transfers.append({
+                            'pulled_lead_id': pulled_lead.id,
+                            'phone': pulled_lead.phone,
+                            'reason': 'Duplicate phone in Lead table'
+                        })
+                        continue
+                    
+                    # Create in Lead table
+                    lead = Lead.objects.create(
+                        name=pulled_lead.name,
+                        email=pulled_lead.email,
+                        phone=pulled_lead.phone,
+                        company=pulled_lead.company,
+                        city=pulled_lead.city,
+                        state=pulled_lead.state,
+                        notes=f"{pulled_lead.notes or ''}\n\n--- TRANSFERRED FROM PULLED LEADS ---\nFilter-based transfer\nTransferred by: {transferred_by.get_full_name()}\nDate: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}\nNotes: {notes}",
+                        lead_type=pulled_lead.original_lead_type,
+                        status=LeadStatus.NEW,
+                        assigned_to=assigned_to,
+                        uploaded_by=transferred_by
+                    )
+                    
+                    # Log activity
+                    LeadActivity.objects.create(
+                        lead=lead,
+                        user=transferred_by,
+                        activity_type='TRANSFER',
+                        description=f'Lead transferred from PulledLeads using filters. Originally from: {pulled_lead.pulled_from.get_full_name() if pulled_lead.pulled_from else "Unknown"}'
+                    )
+                    
+                    # Delete from PulledLeads
+                    pulled_lead.delete()
+                    
+                    transferred_leads.append({
+                        'new_lead_id': lead.id,
+                        'original_pulled_lead_id': pulled_lead.id,
+                        'name': lead.name,
+                        'phone': lead.phone
+                    })
+                    
+                except Exception as e:
+                    failed_transfers.append({
+                        'pulled_lead_id': pulled_lead.id,
+                        'reason': str(e)
+                    })
+        
+        return transferred_leads, failed_transfers, None
+    
+    @staticmethod
+    def preview_transfer_by_filters(filters, assigned_to):
+        """
+        Preview which leads will be transferred
+        """
+        from .models import PulledLead, Lead
+        from django.db.models import Q
+        
+        # Build query (same as transfer_by_filters)
+        query = Q()
+        
+        if 'from_date' in filters and filters['from_date']:
+            from_datetime = timezone.make_aware(
+                datetime.combine(filters['from_date'], time.min)
+            )
+            query &= Q(created_at__gte=from_datetime)
+        
+        if 'to_date' in filters and filters['to_date']:
+            to_datetime = timezone.make_aware(
+                datetime.combine(filters['to_date'], time.max)
+            )
+            query &= Q(created_at__lte=to_datetime)
+        
+        if 'status' in filters and filters['status']:
+            query &= Q(original_status=filters['status'])
+        
+        if 'lead_type' in filters and filters['lead_type']:
+            query &= Q(original_lead_type=filters['lead_type'])
+        
+        if 'exported' in filters:
+            query &= Q(exported=filters['exported'])
+        
+        limit = filters.get('limit', 100)
+        pulled_leads = PulledLead.objects.filter(query).order_by('-created_at')[:limit]
+        
+        preview_data = []
+        for pulled_lead in pulled_leads:
+            # Check if can be transferred
+            can_transfer = not Lead.objects.filter(phone=pulled_lead.phone).exists()
+            
+            preview_data.append({
+                'id': pulled_lead.id,
+                'name': pulled_lead.name,
+                'phone': pulled_lead.phone,
+                'email': pulled_lead.email,
+                'original_lead_type': pulled_lead.original_lead_type,
+                'original_status': pulled_lead.original_status,
+                'exported': pulled_lead.exported,
+                'pulled_from': pulled_lead.pulled_from.get_full_name() if pulled_lead.pulled_from else None,
+                'created_at': pulled_lead.created_at,
+                'can_transfer': can_transfer,
+                'duplicate_reason': 'Phone exists in Lead table' if not can_transfer else None
+            })
+        
+        return preview_data

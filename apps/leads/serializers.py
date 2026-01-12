@@ -282,3 +282,134 @@ class PulledLeadsForUploadSerializer(serializers.Serializer):
         child=serializers.IntegerField(),
         min_length=1
     )
+
+
+class TransferPulledLeadsSerializer(serializers.Serializer):
+    """
+    Serializer for transferring selected pulled leads
+    """
+    pulled_lead_ids = serializers.ListField(
+        child=serializers.IntegerField(),
+        min_length=1,
+        max_length=500,
+        required=False,
+        help_text="Specific PulledLead IDs to transfer"
+    )
+    
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(
+            is_active=True,
+            role__in=[UserRole.FRANCHISE_CALLER, UserRole.PACKAGE_CALLER]
+        ),
+        required=True
+    )
+    
+    notes = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=1000
+    )
+    
+    def validate(self, data):
+        # Either pulled_lead_ids OR filters must be provided
+        if 'pulled_lead_ids' not in data:
+            raise serializers.ValidationError(
+                "Please provide pulled_lead_ids for transfer"
+            )
+        
+        return data
+
+
+class TransferByFiltersSerializer(serializers.Serializer):
+    """
+    Serializer for transferring pulled leads using filters
+    """
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(
+            is_active=True,
+            role__in=[UserRole.FRANCHISE_CALLER, UserRole.PACKAGE_CALLER]
+        ),
+        required=True
+    )
+    
+    # Date filters
+    from_date = serializers.DateField(required=False)
+    to_date = serializers.DateField(required=False)
+    
+    # Lead properties
+    status = serializers.ChoiceField(
+        choices=LeadStatus.CHOICES,
+        required=False
+    )
+    
+    lead_type = serializers.ChoiceField(
+        choices=LeadType.CHOICES,
+        required=False
+    )
+    
+    exported = serializers.BooleanField(required=False)
+    
+    # Limit
+    limit = serializers.IntegerField(
+        min_value=1,
+        max_value=1000,
+        default=100,
+        required=False
+    )
+    
+    notes = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=1000
+    )
+    
+    def validate(self, data):
+        # At least one filter must be provided
+        if not any([
+            'from_date' in data,
+            'to_date' in data,
+            'status' in data,
+            'lead_type' in data,
+            'exported' in data
+        ]):
+            raise serializers.ValidationError(
+                "At least one filter criteria must be provided"
+            )
+        
+        return data
+
+
+class TransferPreviewSerializer(serializers.Serializer):
+    """
+    Serializer for previewing transfer by filters
+    """
+    from_date = serializers.DateField(required=False)
+    to_date = serializers.DateField(required=False)
+    status = serializers.ChoiceField(
+        choices=LeadStatus.CHOICES,
+        required=False
+    )
+    lead_type = serializers.ChoiceField(
+        choices=LeadType.CHOICES,
+        required=False
+    )
+    exported = serializers.BooleanField(required=False)
+    limit = serializers.IntegerField(
+        min_value=1,
+        max_value=500,
+        default=50,
+        required=False
+    )
+    
+    def validate(self, data):
+        if not any([
+            'from_date' in data,
+            'to_date' in data,
+            'status' in data,
+            'lead_type' in data,
+            'exported' in data
+        ]):
+            raise serializers.ValidationError(
+                "At least one filter criteria must be provided"
+            )
+        return data
