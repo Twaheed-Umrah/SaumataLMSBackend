@@ -164,22 +164,29 @@ class CanDeleteUser(permissions.BasePermission):
         # No other roles can delete users
         return False
     
+
 class IsOwnerOrHigher(permissions.BasePermission):
     """
     Allow users to access their own profile or higher roles to access others.
     """
+
     def has_object_permission(self, request, view, obj):
+        user = request.user
+
         # User can always access their own profile
-        if obj == request.user:
+        if obj == user:
             return True
-        
+
         # Super Admin can access all
-        if request.user.is_super_admin:
+        if user.role == UserRole.SUPER_ADMIN:
             return True
-        
+
         # Team Leader can access Package Caller and Franchise Caller
-        if request.user.is_team_leader:
-            return obj.role in ['PACKAGE_CALLER', 'FRANCHISE_CALLER']
-        
+        if user.role == UserRole.TEAM_LEADER:
+            return obj.role in [
+                UserRole.PACKAGE_CALLER,
+                UserRole.FRANCHISE_CALLER,
+            ]
+
         # Others can only access their own profile
         return False

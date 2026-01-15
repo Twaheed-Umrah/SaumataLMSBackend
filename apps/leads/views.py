@@ -80,21 +80,27 @@ class LeadViewSet(viewsets.ModelViewSet):
             return LeadUpdateSerializer
         return LeadSerializer
 
-    # =========================
-    # LIST (ACTIVE LEADS)
-    # =========================
+        # =========================
+        # LIST (ACTIVE LEADS)
+        # =========================
+    # In your LeadViewSet's list method:
     def list(self, request):
         queryset = self.filter_queryset(self.get_queryset())
-        queryset = queryset.exclude(status=LeadStatus.CONVERTED)
-
+    
+        assigned_to_param = request.query_params.get("assigned_to")
         status_param = request.query_params.get("status")
+    
+        # ❌ Exclude converted leads ALWAYS
+        queryset = queryset.exclude(status=LeadStatus.CONVERTED)
+    
+        # ✅ Apply status filter only if explicitly provided
         if status_param:
             queryset = queryset.filter(status=status_param)
-
+    
         date = request.query_params.get("date")
         from_date = request.query_params.get("from_date")
         to_date = request.query_params.get("to_date")
-
+    
         if date:
             parsed = parse_date(date)
             if not parsed:
@@ -102,19 +108,19 @@ class LeadViewSet(viewsets.ModelViewSet):
             start = datetime.combine(parsed, time.min)
             end = datetime.combine(parsed, time.max)
             queryset = queryset.filter(created_at__range=(start, end))
-
+    
         elif from_date and to_date:
             f = parse_date(from_date)
             t = parse_date(to_date)
             if not f or not t:
                 return error_response("Invalid date format (YYYY-MM-DD)")
             queryset = queryset.filter(created_at__date__range=(f, t))
-
+    
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
             return self.get_paginated_response(serializer.data)
-
+    
         serializer = self.get_serializer(queryset, many=True)
         return success_response(serializer.data, "Leads retrieved successfully")
 
