@@ -9,13 +9,15 @@ class UserRole:
     PACKAGE_CALLER = 'PACKAGE_CALLER'
     TEAM_LEADER = 'TEAM_LEADER'
     SUPER_ADMIN = 'SUPER_ADMIN'
-    
+    PROBLEM_SOLVER='PROBLEM_SOLVER'
+
     CHOICES = [
         (LEAD_DISTRIBUTER,'LEAD_DISTRIBUTER'),
         (FRANCHISE_CALLER, 'Franchise Caller'),
         (PACKAGE_CALLER, 'Package Caller'),
         (TEAM_LEADER, 'Team Leader'),
         (SUPER_ADMIN, 'Super Admin'),
+        (PROBLEM_SOLVER,'Problem solver')
     ]
 
 # Lead Types

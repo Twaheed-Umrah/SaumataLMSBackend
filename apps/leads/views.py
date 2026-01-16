@@ -25,7 +25,7 @@ from .services import (
     LeadDistributionService,
     LeadConversionService,
     LeadActivityService,
-     LeadPullService,LeadTransferService
+     LeadPullService,LeadTransferService,LeadManualCreateService
 )
 from utils.constants import UserRole, LeadType, LeadStatus
 from utils.permissions import IsTeamLeaderOrSuperAdmin, IsCallerOrAbove,IsTeamLeaderOrSuperAdminOrLeadDistributer
@@ -87,20 +87,23 @@ class LeadViewSet(viewsets.ModelViewSet):
     def list(self, request):
         queryset = self.filter_queryset(self.get_queryset())
     
+        # Check if assigned_to filter is present
         assigned_to_param = request.query_params.get("assigned_to")
+    
+        # Only exclude converted if NOT filtering by assigned_to specifically
+        # OR if a specific status is requested
         status_param = request.query_params.get("status")
+        
+        if not assigned_to_param and not status_param:
+            queryset = queryset.exclude(status=LeadStatus.CONVERTED)
     
-        # ❌ Exclude converted leads ALWAYS
-        queryset = queryset.exclude(status=LeadStatus.CONVERTED)
-    
-        # ✅ Apply status filter only if explicitly provided
         if status_param:
             queryset = queryset.filter(status=status_param)
-    
+
         date = request.query_params.get("date")
         from_date = request.query_params.get("from_date")
         to_date = request.query_params.get("to_date")
-    
+
         if date:
             parsed = parse_date(date)
             if not parsed:
@@ -115,7 +118,7 @@ class LeadViewSet(viewsets.ModelViewSet):
             if not f or not t:
                 return error_response("Invalid date format (YYYY-MM-DD)")
             queryset = queryset.filter(created_at__date__range=(f, t))
-    
+
         page = self.paginate_queryset(queryset)
         if page is not None:
             serializer = self.get_serializer(page, many=True)
@@ -1330,3 +1333,114 @@ class PreviewTransferByFiltersView(APIView):
                 'name': assigned_to.get_full_name() if assigned_to else None
             }
         }, f"Preview: {can_transfer} leads can be transferred")
+    
+
+# In views.py, add this class after LeadViewSet
+
+class LeadManualCreateAPIView(APIView):
+    """
+    API for manually creating single leads
+    """
+    permission_classes = [IsAuthenticated, IsTeamLeaderOrSuperAdminOrLeadDistributer]
+    
+    def post(self, request):
+        """
+        Create a single lead manually
+        POST /api/leads/create/manual/
+        {
+            "name": "John Doe",
+            "email": "john@example.com",
+            "phone": "9876543210",
+            "company": "ABC Corp",
+            "city": "Mumbai",
+            "state": "Maharashtra",
+            "lead_type": "FRANCHISE",
+            "status": "NEW",
+            "assigned_to": 5,  # Optional - if not provided, auto-assign
+            "notes": "Interested in franchise opportunity"
+        }
+        """
+        from .serializers import LeadCreateManualSerializer
+        
+        serializer = LeadCreateManualSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response("Validation failed", serializer.errors)
+        
+        try:
+            # Create the lead
+            lead = LeadManualCreateService.create_single_lead(
+                lead_data=serializer.validated_data,
+                uploaded_by=request.user
+            )
+            
+            # Return response with lead details
+            lead_serializer = LeadSerializer(lead)
+            
+            response_data = {
+                'lead': lead_serializer.data,
+                'assignment_info': {
+                    'was_auto_assigned': serializer.validated_data.get('assigned_to') is None,
+                    'assigned_to': {
+                        'id': lead.assigned_to.id if lead.assigned_to else None,
+                        'name': lead.assigned_to.get_full_name() if lead.assigned_to else None,
+                        'role': lead.assigned_to.role if lead.assigned_to else None
+                    } if lead.assigned_to else None
+                }
+            }
+            
+            return created_response(
+                response_data,
+                f"Lead created successfully and assigned to {lead.assigned_to.get_full_name()}"
+            )
+            
+        except ValueError as e:
+            return error_response(str(e))
+        except Exception as e:
+            return error_response(f"Error creating lead: {str(e)}")
+    
+    def get(self, request):
+        """
+        Get form data for manual lead creation
+        GET /api/leads/create/manual/
+        
+        Returns available callers and lead types for the form
+        """
+        # Get present callers for both types
+        franchise_callers = LeadDistributionService.get_callers_by_type(
+            lead_type=LeadType.FRANCHISE,
+            include_non_present=False
+        ).values('id', 'first_name', 'last_name', 'email')
+        
+        package_callers = LeadDistributionService.get_callers_by_type(
+            lead_type=LeadType.PACKAGE,
+            include_non_present=False
+        ).values('id', 'first_name', 'last_name', 'email')
+        
+        # Get all callers (including non-present) for dropdown
+        all_franchise_callers = LeadDistributionService.get_callers_by_type(
+            lead_type=LeadType.FRANCHISE,
+            include_non_present=True
+        ).values('id', 'first_name', 'last_name', 'email', 'is_present')
+        
+        all_package_callers = LeadDistributionService.get_callers_by_type(
+            lead_type=LeadType.PACKAGE,
+            include_non_present=True
+        ).values('id', 'first_name', 'last_name', 'email', 'is_present')
+        
+        return success_response({
+            'form_data': {
+                'lead_types': LeadType.CHOICES,
+                'statuses': LeadStatus.CHOICES,
+                'callers': {
+                    'present': {
+                        'franchise': list(franchise_callers),
+                        'package': list(package_callers)
+                    },
+                    'all': {
+                        'franchise': list(all_franchise_callers),
+                        'package': list(all_package_callers)
+                    }
+                }
+            },
+            'auto_assignment_note': 'If no caller is selected, lead will be auto-assigned to a present caller with the least leads'
+        }, "Form data for manual lead creation")

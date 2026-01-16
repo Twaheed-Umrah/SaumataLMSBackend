@@ -915,3 +915,104 @@ class LeadTransferService:
             })
         
         return preview_data
+    
+
+# In services.py, add this class after LeadManualUploadService
+
+class LeadManualCreateService:
+    """
+    Service for manually creating single leads
+    """
+    
+    @staticmethod
+    def create_single_lead(lead_data, uploaded_by):
+        """
+        Create a single lead manually with optional caller assignment
+        """
+        from .models import Lead, LeadActivity
+        
+        # Get lead data
+        name = lead_data.get('name')
+        phone = lead_data.get('phone')
+        email = lead_data.get('email')
+        city = lead_data.get('city')
+        state = lead_data.get('state')
+        lead_type = lead_data.get('lead_type')
+        status = lead_data.get('status', LeadStatus.NEW)
+        notes = lead_data.get('notes')
+        assigned_to = lead_data.get('assigned_to')
+        
+        # If no caller assigned, auto-assign
+        if not assigned_to:
+            # Get present callers for the lead type
+            callers = LeadDistributionService.get_callers_by_type(
+                lead_type=lead_type,
+                include_non_present=False
+            )
+            
+            if callers.exists():
+                # Round-robin assignment: get the caller with least leads
+                from django.db.models import Count
+                
+                # Get lead count for each caller
+                lead_counts = {}
+                for caller in callers:
+                    count = Lead.objects.filter(
+                        assigned_to=caller,
+                        lead_type=lead_type
+                    ).count()
+                    lead_counts[caller.id] = count
+                
+                # Find caller with minimum leads
+                if lead_counts:
+                    min_caller_id = min(lead_counts, key=lead_counts.get)
+                    assigned_to = User.objects.get(id=min_caller_id)
+                else:
+                    assigned_to = callers.first()
+            else:
+                # If no present callers, try to get any active caller
+                callers_all = LeadDistributionService.get_callers_by_type(
+                    lead_type=lead_type,
+                    include_non_present=True
+                )
+                
+                if callers_all.exists():
+                    # Get non-present callers for error message
+                    non_present = callers_all.filter(is_present=False)
+                    error_msg = f"No active and present {lead_type} callers found. {non_present.count()} caller(s) are marked as not present."
+                    raise ValueError(error_msg)
+                else:
+                    raise ValueError(f"No active {lead_type} callers found")
+        
+        # Create the lead
+        lead = Lead.objects.create(
+            name=name,
+            email=email or None,
+            phone=phone,
+            city=city or None,
+            state=state or None,
+            notes=notes or None,
+            lead_type=lead_type,
+            status=status,
+            assigned_to=assigned_to,
+            uploaded_by=uploaded_by
+        )
+        
+        # Log activity
+        activity_description = f'Lead manually created and assigned to {assigned_to.get_full_name()}'
+        if not assigned_to:
+            activity_description = 'Lead manually created with auto-assignment'
+        
+        LeadActivity.objects.create(
+            lead=lead,
+            user=uploaded_by,
+            activity_type='CREATE',
+            description=activity_description
+        )
+        
+        # Add notes about creation
+        if notes:
+            lead.notes = f"{lead.notes}\n\n--- MANUAL CREATION ---\nCreated by: {uploaded_by.get_full_name()}\nDate: {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            lead.save()
+        
+        return lead

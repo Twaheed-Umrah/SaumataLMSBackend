@@ -413,3 +413,80 @@ class TransferPreviewSerializer(serializers.Serializer):
                 "At least one filter criteria must be provided"
             )
         return data
+    
+
+# In serializers.py, add this after LeadManualUploadSerializer
+
+class LeadCreateManualSerializer(serializers.Serializer):
+    """
+    Serializer for manual single lead creation
+    """
+    name = serializers.CharField(max_length=255, required=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    phone = serializers.CharField(max_length=15, required=True)
+    city = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    state = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    lead_type = serializers.ChoiceField(choices=LeadType.CHOICES, required=True)
+    status = serializers.ChoiceField(
+        choices=LeadStatus.CHOICES, 
+        required=False, 
+        default=LeadStatus.NEW
+    )
+    assigned_to = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(
+            is_active=True,
+            role__in=[UserRole.FRANCHISE_CALLER, UserRole.PACKAGE_CALLER]
+        ),
+        required=False,
+        allow_null=True
+    )
+    notes = serializers.CharField( required=False,
+    allow_blank=True,
+    allow_null=True)
+    
+    def validate(self, data):
+        # Validate phone number
+        phone = data.get('phone', '')
+        if not phone:
+            raise serializers.ValidationError("Phone number is required")
+        
+        # Clean and validate phone
+        phone = ''.join(filter(str.isdigit, str(phone)))
+        if phone.startswith('91') and len(phone) == 12:
+            phone = phone[2:]
+        elif len(phone) > 10:
+            phone = phone[-10:]
+        
+        # Validate Indian mobile number
+        if len(phone) != 10 or not phone.startswith(('6', '7', '8', '9')):
+            raise serializers.ValidationError("Invalid Indian mobile number")
+        
+        data['phone'] = phone
+        
+        # Check if phone already exists
+        if Lead.objects.filter(phone=phone).exists():
+            raise serializers.ValidationError("Lead with this phone number already exists")
+        
+        # Validate assignment if provided
+        assigned_to = data.get('assigned_to')
+        lead_type = data.get('lead_type')
+        
+        if assigned_to:
+            # Check if user role matches lead type
+            if lead_type == 'FRANCHISE' and assigned_to.role != UserRole.FRANCHISE_CALLER:
+                raise serializers.ValidationError(
+                    "Franchise leads can only be assigned to franchise callers"
+                )
+            
+            if lead_type == 'PACKAGE' and assigned_to.role != UserRole.PACKAGE_CALLER:
+                raise serializers.ValidationError(
+                    "Package leads can only be assigned to package callers"
+                )
+            
+            # Check if caller is present
+            if not assigned_to.is_present:
+                raise serializers.ValidationError(
+                    f"Caller {assigned_to.get_full_name()} is not marked as present"
+                )
+        
+        return data

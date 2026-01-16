@@ -1,5 +1,10 @@
 from django.urls import path
-from .views import BulkCallerPresenceAPIView, LeadViewSet, FollowUpViewSet,CallerPresenceManagementAPIView,LeadPullByIDsView,LeadPullByFiltersView,PulledLeadsListView,PulledLeadsExportView,PulledLeadsStatisticsView,PulledLeadsPrepareUploadView,BulkLeadPullPreviewView,CallerLeadsSummaryView,TransferPulledLeadsView,TransferByFiltersView,PreviewTransferByFiltersView
+from .views import (BulkCallerPresenceAPIView, LeadViewSet, FollowUpViewSet,
+                    CallerPresenceManagementAPIView,LeadPullByIDsView,LeadPullByFiltersView,
+                    PulledLeadsListView,PulledLeadsExportView,PulledLeadsStatisticsView,
+                    PulledLeadsPrepareUploadView,BulkLeadPullPreviewView,CallerLeadsSummaryView,
+                    TransferPulledLeadsView,TransferByFiltersView,PreviewTransferByFiltersView
+                    ,LeadManualCreateAPIView)
 
 # =========================
 # Lead ViewSet mappings
@@ -87,6 +92,6 @@ urlpatterns = [
     path('leads/transfer/pulled/', transfer_pulled_leads, name='transfer-pulled-leads'),
     path('leads/transfer/by-filters/', transfer_by_filters, name='transfer-by-filters'),
     path('leads/transfer/preview-filters/', preview_transfer_filters, name='preview-transfer-filters'),
-
+    path('leads/create/manual/', LeadManualCreateAPIView.as_view(), name='lead-create-manual'),
     
 ]
